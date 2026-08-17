@@ -341,10 +341,9 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
     const current = accountId
       ? store.listAccounts().find((account) => account.id === accountId)
       : null
-    const activeAccount = store.getActiveAccount()
     const appid = String(payload.appid ?? '').trim()
     const providedSecret = String(payload.secret ?? '').trim()
-    const existingSecret = accountId === activeAccount?.id ? activeAccount.secret : ''
+    const existingSecret = current?.secret ?? ''
     const secret = providedSecret || existingSecret
     const name = String(payload.name ?? '').trim() || `Bot ${appid}`
     if (!appid || !secret) throw new Error('AppID 和 Secret 均为必填项')
