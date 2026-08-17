@@ -1,0 +1,17 @@
+{
+  "name": "qq-official-web-workbench",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node src/server.ts",
+    "dev": "node --watch src/server.ts",
+    "check": "node --check src/server.ts"
+  },
+  "dependencies": {
+    "qq-official-bot": "file:./packages/qq-official-bot"
+  }
+}
