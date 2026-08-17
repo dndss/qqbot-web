@@ -42,7 +42,16 @@ pnpm dev
 
 SDK 源码位于 `packages/qq-official-bot`，Web 项目通过本地文件依赖直接使用其编译产物。SDK 的上游仓库及同步说明见该目录下的 `README.md`。
 
-可通过环境变量修改监听地址：
+监听地址在 `server.config.json` 中配置：
+
+```json
+{
+  "host": "127.0.0.1",
+  "port": 3210
+}
+```
+
+修改配置后运行 `pnpm start` 即可生效。也可以临时使用环境变量覆盖配置文件：
 
 ```powershell
 $env:WEB_QQ_HOST = '127.0.0.1'

@@ -13,8 +13,29 @@ const applicationDirectory = fileURLToPath(new URL('..', import.meta.url))
 const publicDirectory = join(applicationDirectory, 'public')
 const store = new JsonStore(join(applicationDirectory, 'data'))
 const sseClients = new Set<ServerResponse>()
-const port = Number.parseInt(process.env.WEB_QQ_PORT ?? '3210', 10)
-const host = process.env.WEB_QQ_HOST ?? '127.0.0.1'
+
+async function loadServerConfig(): Promise<{ host: string; port: number }> {
+  let fileConfig: Record<string, unknown> = {}
+  try {
+    const parsed: unknown = JSON.parse(await readFile(join(applicationDirectory, 'server.config.json'), 'utf8'))
+    if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('配置内容必须是 JSON 对象')
+    fileConfig = parsed as Record<string, unknown>
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+      throw new Error(`读取 server.config.json 失败：${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  const host = process.env.WEB_QQ_HOST?.trim() || String(fileConfig.host ?? '127.0.0.1').trim()
+  const port = Number(process.env.WEB_QQ_PORT?.trim() || fileConfig.port || 3210)
+  if (!host) throw new Error('WEB_QQ_HOST 或 server.config.json 中的 host 不能为空')
+  if (!Number.isInteger(port) || port < 1 || port > 65535) {
+    throw new Error('WEB_QQ_PORT 或 server.config.json 中的 port 必须是 1 到 65535 之间的整数')
+  }
+  return { host, port }
+}
+
+const { host, port } = await loadServerConfig()
 
 let bot: Bot | null = null
 let botAppid = ''
