@@ -456,8 +456,19 @@ async function recallMessage(conversation: Conversation, messageId: string): Pro
   if (!bot || connectionState !== 'connected') throw new Error('机器人尚未连接')
   const message = store.getMessage(conversation.id, messageId)
   if (!message) throw new Error('消息不存在')
-  if (message.direction !== 'outgoing') throw new Error('只能撤回当前 Bot 发送的消息')
   if (message.status === 'recalled') return message
+  if (message.direction === 'incoming') {
+    if (conversation.type !== 'group') throw new Error('私聊中只能撤回当前 Bot 发送的消息')
+    if (message.roles?.some((role) => role === 'owner' || role === 'admin')) {
+      throw new Error('不能撤回群主或管理员的消息')
+    }
+    const botState = await getGroupBotState(conversation.targetId, { force: true })
+    if (!botState || !['owner', 'admin'].includes(botState.memberRole)) {
+      throw new Error('机器人不是该群的群主或管理员，无法撤回群成员消息')
+    }
+    const updatedConversation = await store.updateConversation(conversation.id, { botState })
+    publish('conversation', updatedConversation)
+  }
   const recalled = conversation.type === 'private'
     ? await bot.recallPrivateMessage(conversation.targetId, message.id)
     : await bot.recallGroupMessage(conversation.targetId, message.id)

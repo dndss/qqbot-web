@@ -314,7 +314,12 @@ async function muteFromMenu(message, durationMinutes) {
 
 function openMessageMenu(event, message) {
   const actions = []
-  if (message.direction === 'outgoing' && message.status !== 'recalled') {
+  const conversation = state.conversations.find((item) => item.id === message.conversationId)
+  const targetIsManager = (message.roles || []).some((role) => role === 'owner' || role === 'admin')
+  const botCanManage = ['owner', 'admin'].includes(conversation?.botState?.memberRole)
+  const canRecall = message.direction === 'outgoing'
+    || (conversation?.type === 'group' && !targetIsManager && botCanManage)
+  if (canRecall && message.status !== 'recalled') {
     actions.push({ label: '撤回', danger: true, run: () => recallFromMenu(message) }, null)
   }
   if (message.status !== 'recalled') {
