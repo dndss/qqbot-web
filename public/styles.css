@@ -99,6 +99,16 @@ button { cursor: pointer; }
 .message-row.outgoing .message-meta { flex-direction: row-reverse; }
 .message-bubble { padding: 10px 13px; border: 1px solid #e5ebf0; border-radius: 5px 15px 15px; background: #fff; box-shadow: 0 3px 8px rgba(37,60,87,.035); white-space: pre-wrap; overflow-wrap: anywhere; font-size: 14px; line-height: 1.55; }
 .message-row.outgoing .message-bubble { border: 0; border-radius: 15px 5px 15px 15px; color: white; background: linear-gradient(135deg, #268cf1, #1872dd); }
+.message-bubble.has-rich-content { min-width: 42px; }
+.message-image-link { display: block; width: fit-content; max-width: 100%; margin: 3px 0; border-radius: 10px; overflow: hidden; line-height: 0; }
+.message-image { display: block; width: auto; max-width: min(360px, 68vw); height: auto; max-height: 420px; object-fit: contain; background: #edf1f5; }
+.message-face { display: inline-block; margin: 0 2px; padding: 1px 7px; border-radius: 8px; color: #9b5f12; background: #fff1ce; white-space: nowrap; }
+.message-mention { color: #1875d1; font-weight: 600; }
+.message-reference { display: block; margin-bottom: 6px; padding: 5px 8px; border-left: 3px solid #a9c8e8; border-radius: 4px; color: #718196; background: #f2f6fa; font-size: 12px; }
+.message-attachment, .message-media-fallback { display: inline-block; margin: 3px 2px; padding: 5px 9px; border-radius: 8px; color: #2876bd; background: #eaf4ff; text-decoration: none; }
+.message-attachment:hover { text-decoration: underline; }
+.message-row.outgoing .message-face, .message-row.outgoing .message-reference, .message-row.outgoing .message-attachment, .message-row.outgoing .message-media-fallback { color: white; background: rgba(255,255,255,.17); }
+.message-row.outgoing .message-mention { color: #fff; }
 .composer { margin: 0 18px 18px; padding: 12px 14px 10px; border: 1px solid #dfe6ed; border-radius: 16px; background: #fff; box-shadow: 0 8px 24px rgba(49,72,99,.06); }
 .composer textarea { display: block; width: 100%; min-height: 42px; max-height: 140px; padding: 5px; resize: none; border: 0; outline: 0; color: #27374c; background: transparent; line-height: 1.5; }
 .composer-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }

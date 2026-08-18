@@ -74,6 +74,119 @@ function renderAvatar(element, title, avatarUrl) {
   element.append(image)
 }
 
+function safeMediaUrl(value) {
+  if (typeof value !== 'string' || !value) return null
+  try {
+    const url = new URL(value, window.location.href)
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : null
+  } catch {
+    return null
+  }
+}
+
+function mediaFallback(label) {
+  const fallback = document.createElement('span')
+  fallback.className = 'message-media-fallback'
+  fallback.textContent = label
+  return fallback
+}
+
+function renderMessagePart(container, part) {
+  if (!part || typeof part !== 'object') return
+  switch (part.type) {
+    case 'text':
+      container.append(document.createTextNode(String(part.text || '')))
+      break
+    case 'image': {
+      const localUrl = safeMediaUrl(part.localUrl)
+      const remoteUrl = safeMediaUrl(part.url)
+      const initialUrl = localUrl || remoteUrl
+      if (!initialUrl) {
+        container.append(mediaFallback('[图片地址无效]'))
+        break
+      }
+      const link = document.createElement('a')
+      link.className = 'message-image-link'
+      link.href = initialUrl
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      const image = document.createElement('img')
+      image.className = 'message-image'
+      image.src = initialUrl
+      image.alt = part.name || '消息图片'
+      image.loading = 'lazy'
+      image.decoding = 'async'
+      image.referrerPolicy = 'no-referrer'
+      let triedRemote = !localUrl || localUrl === remoteUrl
+      image.addEventListener('error', () => {
+        if (!triedRemote && remoteUrl) {
+          triedRemote = true
+          image.src = remoteUrl
+          link.href = remoteUrl
+          return
+        }
+        link.replaceWith(mediaFallback('[图片加载失败]'))
+      })
+      link.append(image)
+      container.append(link)
+      break
+    }
+    case 'face': {
+      const face = document.createElement('span')
+      face.className = 'message-face'
+      face.textContent = part.text || `[表情${part.id ? ` ${part.id}` : ''}]`
+      container.append(face)
+      break
+    }
+    case 'at': {
+      const mention = document.createElement('span')
+      mention.className = 'message-mention'
+      mention.textContent = `@${part.name || (part.userId === 'all' ? '所有人' : part.userId || '用户')}`
+      container.append(mention)
+      break
+    }
+    case 'reply': {
+      const reply = document.createElement('span')
+      reply.className = 'message-reference'
+      reply.textContent = part.messageId ? `回复消息 ${part.messageId}` : '回复消息'
+      container.append(reply)
+      break
+    }
+    case 'video':
+    case 'audio':
+    case 'file': {
+      const labels = { video: '视频', audio: '音频', file: '文件' }
+      const label = part.name || labels[part.type]
+      const url = safeMediaUrl(part.url)
+      if (!url) {
+        container.append(mediaFallback(`[${label}]`))
+        break
+      }
+      const link = document.createElement('a')
+      link.className = 'message-attachment'
+      link.href = url
+      link.target = '_blank'
+      link.rel = 'noopener noreferrer'
+      link.referrerPolicy = 'no-referrer'
+      link.textContent = `打开${label}`
+      container.append(link)
+      break
+    }
+    case 'unsupported':
+      container.append(mediaFallback(part.label || '[暂不支持的消息]'))
+      break
+  }
+}
+
+function renderMessageContent(container, message) {
+  if (!Array.isArray(message.parts) || message.parts.length === 0) {
+    container.textContent = message.content
+    return
+  }
+  container.classList.add('has-rich-content')
+  for (const part of message.parts) renderMessagePart(container, part)
+}
+
 function renderStatus() {
   const statusMap = {
     disconnected: ['未连接', '请配置或连接机器人'],
@@ -205,7 +318,7 @@ function renderMessages() {
     meta.append(time)
     const bubble = document.createElement('div')
     bubble.className = 'message-bubble'
-    bubble.textContent = message.content
+    renderMessageContent(bubble, message)
     stack.append(meta, bubble)
     row.append(avatar, stack)
     elements.messageList.append(row)

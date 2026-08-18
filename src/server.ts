@@ -4,14 +4,17 @@ import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { Bot, ReceiverMode } from 'qq-official-bot'
+import { MediaCache } from './media-cache.ts'
 import { JsonStore } from './store.ts'
-import type { BotConfig, Conversation, ConversationType, GroupBotState, IncomingMessageLike, SenderRole, StoredMessage } from './types.ts'
+import type { BotConfig, Conversation, ConversationType, GroupBotState, IncomingMessageLike, MessagePart, SenderRole, StoredMessage } from './types.ts'
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
 const applicationDirectory = fileURLToPath(new URL('..', import.meta.url))
 const publicDirectory = join(applicationDirectory, 'public')
-const store = new JsonStore(join(applicationDirectory, 'data'))
+const dataDirectory = join(applicationDirectory, 'data')
+const store = new JsonStore(dataDirectory)
+const mediaCache = new MediaCache(dataDirectory)
 const sseClients = new Set<ServerResponse>()
 
 async function loadServerConfig(): Promise<{ host: string; port: number }> {
@@ -92,6 +95,93 @@ function senderRoles(event: IncomingMessageLike): SenderRole[] {
   return roles
 }
 
+function messageElementUrl(data: Record<string, unknown>): string | undefined {
+  const value = typeof data.url === 'string'
+    ? data.url
+    : typeof data.file === 'string'
+      ? data.file
+      : ''
+  if (!value) return undefined
+  try {
+    const url = new URL(value)
+    return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined
+  } catch {
+    return undefined
+  }
+}
+
+async function normalizeMessagePart(
+  element: NonNullable<IncomingMessageLike['message']>[number],
+  accountId: string,
+): Promise<MessagePart | undefined> {
+  const type = String(element.type ?? '').toLowerCase()
+  const data = element.data && typeof element.data === 'object' ? element.data : {}
+  switch (type) {
+    case 'text': {
+      const text = String(data.text ?? '')
+      return text ? { type: 'text', text } : undefined
+    }
+    case 'image': {
+      const url = messageElementUrl(data)
+      if (!url) return { type: 'unsupported', label: '[无法读取的图片]' }
+      const localUrl = await mediaCache.cacheImage(accountId, url)
+      const name = typeof data.name === 'string' ? data.name : undefined
+      return { type: 'image', url, ...(localUrl ? { localUrl } : {}), ...(name ? { name } : {}) }
+    }
+    case 'face': {
+      const id = String(data.id ?? '')
+      const text = typeof data.text === 'string' && data.text.trim() ? data.text.trim() : undefined
+      return { type: 'face', id, ...(text ? { text } : {}) }
+    }
+    case 'at': {
+      const userId = String(data.user_id ?? '')
+      const nameValue = data.user_name ?? data.username ?? data.name
+      const name = typeof nameValue === 'string' && nameValue.trim() ? nameValue.trim() : undefined
+      return { type: 'at', userId, ...(name ? { name } : {}) }
+    }
+    case 'reply':
+      return { type: 'reply', messageId: String(data.message_id ?? data.id ?? '') }
+    case 'video':
+    case 'audio':
+    case 'file': {
+      const url = messageElementUrl(data)
+      const nameValue = data.name ?? data.filename
+      const name = typeof nameValue === 'string' && nameValue.trim() ? nameValue.trim() : undefined
+      return { type, ...(url ? { url } : {}), ...(name ? { name } : {}) }
+    }
+    case 'markdown': {
+      const text = String(data.content ?? '')
+      return text ? { type: 'text', text } : { type: 'unsupported', label: '[Markdown 消息]' }
+    }
+    case 'forward':
+      return { type: 'unsupported', label: '[合并转发消息]' }
+    default:
+      return type ? { type: 'unsupported', label: `[${type} 消息]` } : undefined
+  }
+}
+
+async function normalizeMessageParts(event: IncomingMessageLike, accountId: string): Promise<MessagePart[]> {
+  if (!Array.isArray(event.message)) return []
+  const parts = await Promise.all(event.message.map((element) => normalizeMessagePart(element, accountId)))
+  return parts.filter((part): part is MessagePart => Boolean(part))
+}
+
+function messagePreview(parts: MessagePart[]): string {
+  return parts.map((part) => {
+    switch (part.type) {
+      case 'text': return part.text
+      case 'image': return '[图片]'
+      case 'face': return part.text || `[表情${part.id ? ` ${part.id}` : ''}]`
+      case 'at': return `@${part.name || (part.userId === 'all' ? '所有人' : shortId(part.userId))}`
+      case 'reply': return '[回复]'
+      case 'video': return '[视频]'
+      case 'audio': return '[音频]'
+      case 'file': return `[文件${part.name ? `：${part.name}` : ''}]`
+      case 'unsupported': return part.label
+    }
+  }).join('').trim()
+}
+
 async function getGroupProfile(groupOpenid: string): Promise<Partial<Conversation>> {
   const existing = store.getConversation(`group:${groupOpenid}`)
   if (existing?.groupMemberCount !== undefined || existing?.description || existing?.category || existing?.tags?.length) {
@@ -167,7 +257,7 @@ async function getGroupBotState(
   }
 }
 
-async function normalizeIncoming(event: IncomingMessageLike): Promise<{ conversation: Conversation; message: StoredMessage } | null> {
+async function normalizeIncoming(event: IncomingMessageLike, accountId: string): Promise<{ conversation: Conversation; message: StoredMessage } | null> {
   const senderId = event.sender?.user_id ?? event.user_id ?? 'unknown'
   const senderName = event.sender?.user_name || `用户 ${shortId(senderId)}`
   const senderOpenid = event.sender?.user_openid || senderId
@@ -199,13 +289,13 @@ async function normalizeIncoming(event: IncomingMessageLike): Promise<{ conversa
 
   const conversationId = `${type}:${targetId}`
   const timestamp = event.timestamp ? event.timestamp * 1000 : Date.now()
-  const content = event.raw_message?.trim() || '[暂不支持展示的消息]'
+  const parts = await normalizeMessageParts(event, accountId)
+  const content = messagePreview(parts) || event.raw_message?.trim() || '[暂不支持展示的消息]'
   return {
     conversation: {
       id: conversationId,
       type,
       targetId,
-      title,
       subtitle,
       updatedAt: timestamp,
       unread: 0,
@@ -223,6 +313,7 @@ async function normalizeIncoming(event: IncomingMessageLike): Promise<{ conversa
       avatarUrl: senderAvatarUrl,
       roles: senderRoles(event),
       content,
+      ...(parts.length ? { parts } : {}),
       timestamp,
       status: 'received',
     },
@@ -231,7 +322,7 @@ async function normalizeIncoming(event: IncomingMessageLike): Promise<{ conversa
 
 async function handleIncoming(event: IncomingMessageLike, accountId: string): Promise<void> {
   if (accountId !== botAccountId || accountId !== store.getActiveAccount()?.id) return
-  const normalized = await normalizeIncoming(event)
+  const normalized = await normalizeIncoming(event, accountId)
   if (accountId !== botAccountId || accountId !== store.getActiveAccount()?.id) return
   if (!normalized) return
   await store.addMessage(normalized.conversation, normalized.message)
@@ -305,6 +396,7 @@ async function sendMessage(conversation: Conversation, content: string): Promise
     senderId: bot.self_id || 'bot',
     senderName: '机器人',
     content,
+    parts: [{ type: 'text', text: content }],
     timestamp: result.timestamp ? result.timestamp * 1000 : Date.now(),
     status: 'sent',
   }
@@ -359,9 +451,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
   if (url.pathname === '/api/config' && request.method === 'PUT') {
     const payload = await readJson(request)
     const accountId = payload.accountId ? String(payload.accountId) : undefined
-    const current = accountId
-      ? store.listAccounts().find((account) => account.id === accountId)
-      : null
+    const current = accountId ? store.getAccount(accountId) : undefined
     const appid = String(payload.appid ?? '').trim()
     const providedSecret = String(payload.secret ?? '').trim()
     const existingSecret = current?.secret ?? ''
@@ -510,11 +600,39 @@ async function serveStatic(response: ServerResponse, pathname: string): Promise<
   }
 }
 
+async function serveMedia(response: ServerResponse, pathname: string): Promise<void> {
+  const match = pathname.match(/^\/media\/([^/]+)\/([^/]+)$/)
+  const accountId = match ? decodeURIComponent(match[1]) : ''
+  const filename = match ? decodeURIComponent(match[2]) : ''
+  const path = mediaCache.mediaPath(accountId, filename)
+  const contentType = mediaCache.contentType(filename)
+  if (!path || !contentType) {
+    sendJson(response, 404, { error: '媒体资源不存在' })
+    return
+  }
+  try {
+    const body = await readFile(path)
+    response.writeHead(200, {
+      'Content-Type': contentType,
+      'Content-Length': body.length,
+      'Cache-Control': 'public, max-age=31536000, immutable',
+      'X-Content-Type-Options': 'nosniff',
+    })
+    response.end(body)
+  } catch {
+    sendJson(response, 404, { error: '媒体资源不存在' })
+  }
+}
+
 const server = createServer(async (request, response) => {
   try {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
     if (url.pathname.startsWith('/api/')) {
       if (!(await handleApi(request, response, url))) sendJson(response, 404, { error: '接口不存在' })
+      return
+    }
+    if (url.pathname.startsWith('/media/')) {
+      await serveMedia(response, url.pathname)
       return
     }
     await serveStatic(response, url.pathname)

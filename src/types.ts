@@ -1,6 +1,15 @@
 export type ConversationType = 'private' | 'group'
 export type SenderRole = 'owner' | 'admin'
 
+export type MessagePart =
+  | { type: 'text'; text: string }
+  | { type: 'image'; url: string; localUrl?: string; name?: string }
+  | { type: 'face'; id: string; text?: string }
+  | { type: 'at'; userId: string; name?: string }
+  | { type: 'reply'; messageId: string }
+  | { type: 'video' | 'audio' | 'file'; url?: string; name?: string }
+  | { type: 'unsupported'; label: string }
+
 export interface GroupBotState {
   memberOpenid: string
   joinedAt: string
@@ -61,6 +70,7 @@ export interface StoredMessage {
   avatarUrl?: string
   roles?: SenderRole[]
   content: string
+  parts?: MessagePart[]
   timestamp: number
   status: 'sent' | 'received' | 'pending' | 'failed'
 }
@@ -79,6 +89,10 @@ export interface IncomingMessageLike {
   message_id?: string
   id?: string
   raw_message?: string
+  message?: Array<{
+    type?: string
+    data?: Record<string, unknown>
+  }>
   timestamp?: number
   member_role?: 'member' | 'owner' | 'admin'
   author?: {

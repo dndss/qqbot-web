@@ -70,6 +70,11 @@ export class JsonStore {
     return this.#registry.accounts.find((account) => account.id === id) ?? null
   }
 
+  getAccount(accountId: string): BotAccount | undefined {
+    const account = this.#registry.accounts.find((item) => item.id === accountId)
+    return account ? structuredClone(account) : undefined
+  }
+
   async getConfig(): Promise<BotConfig | null> {
     const account = this.getActiveAccount()
     if (!account) return null
