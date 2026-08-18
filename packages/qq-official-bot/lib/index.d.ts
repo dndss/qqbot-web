@@ -1205,6 +1205,8 @@ export enum MusicPlatform {
 export interface Quotable {
     id?: string;
     event_id?: string;
+    /** 当前消息的引用索引，用于 message_reference.message_id */
+    msg_idx?: string;
 }
 export interface ForwardMessageNode {
     index: number;
@@ -1420,8 +1422,10 @@ export const segment: {
     /**
      * 创建回复消息段
      * @param idOrQuotable 消息ID、事件ID或Quotable对象
+     * @param quote 是否引用该消息
+     * @param referenceMsgIdx 引用索引；传入Quotable对象时默认读取对象的msg_idx
      */
-    reply(idOrQuotable: string | Quotable): ReplyElem;
+    reply(idOrQuotable: string | Quotable, quote?: boolean, referenceMsgIdx?: string): ReplyElem;
     /**
      * 创建键盘按钮组消息段
      * @param id 按钮组ID
@@ -1440,7 +1444,7 @@ export function trimQuote(str: string): string;
  * 消息构建器 - 专门负责构建消息内容
  */
 export interface MessagePayload {
-    msg_seq: number;
+    msg_seq?: number;
     content: string;
     msg_type?: number;
     msg_id?: string;
@@ -1481,6 +1485,7 @@ export class MessageBuilder {
     private appid;
     private isGuild?;
     private source?;
+    private quote;
     private messagePayload;
     private filePayload;
     private buttons;
@@ -1490,7 +1495,8 @@ export class MessageBuilder {
     constructor(appid: string, isGuild?: boolean, source?: {
         id?: string;
         event_id?: string;
-    });
+        msg_idx?: string;
+    }, quote?: boolean);
     /**
      * 构建消息
      */
@@ -1754,6 +1760,8 @@ export class Message {
     group_id?: string;
     id: string;
     message_id: string;
+    /** 当前消息的引用索引，用于后续引用该消息 */
+    msg_idx?: string;
     sender: Message.Sender;
     user_id: string;
     constructor(bot: Bot<ReceiverMode, ApplicationPlatform>, attrs: Dict);
@@ -1805,7 +1813,7 @@ export interface MessageEvent {
 export class PrivateMessageEvent extends Message implements MessageEvent {
     constructor(bot: Bot, sub_type: Message.SubType, payload: Partial<Message>);
     recall(): Promise<boolean>;
-    reply(message: Sendable): Promise<SendResult>;
+    reply(message: Sendable, quote?: boolean): Promise<SendResult>;
 }
 export class MessageAuditEvent {
     bot: Bot;
@@ -1825,7 +1833,7 @@ export class GroupMessageEvent extends Message implements MessageEvent {
     group_id: string;
     group_name: string;
     constructor(bot: Bot, payload: Partial<Message>);
-    reply(message: Sendable): Promise<SendResult>;
+    reply(message: Sendable, quote?: boolean): Promise<SendResult>;
 }
 export class GuildMessageEvent extends Message implements MessageEvent {
     guild_id: string;
@@ -1850,7 +1858,7 @@ export class GuildMessageEvent extends Message implements MessageEvent {
      * 回复消息
      * @param message {Sendable} 回复内容
      */
-    reply(message: Sendable): Promise<SendResult>;
+    reply(message: Sendable, quote?: boolean): Promise<SendResult>;
     /**
      * 消息表态
      * @param type {1|2} 表情类型
@@ -2252,6 +2260,99 @@ export namespace Client {
     } & ReceiveModeConfig<M>[T];
 }
 /**
+ * 消息服务类 - 负责所有消息相关的API操作
+ */
+export interface SendOptions {
+    quote?: boolean;
+    timeout?: number;
+    retries?: number;
+}
+export interface SendResult {
+    id: string;
+    timestamp: number;
+    ext_info?: {
+        ref_idx?: string;
+        [key: string]: unknown;
+    };
+    [key: string]: any;
+}
+export class MessageService {
+    private request;
+    private appid;
+    private readonly replySequences;
+    constructor(request: AxiosInstance, appid: string);
+    private nextReplySequence;
+    private releaseReplySequence;
+    /**
+     * 获取子频道消息
+     */
+    getGuildMessage(channelId: string, messageId: string): Promise<GuildMessageEvent>;
+    /**
+     * 发送频道消息
+     */
+    sendGuildMessage(channelId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
+    /**
+     * 撤回频道消息
+     */
+    recallGuildMessage(channelId: string, messageId: string, hideWarning?: boolean): Promise<boolean>;
+    /**
+     * 创建频道私信会话
+     */
+    createDirectSession(guildId: string, userId: string): Promise<DMS>;
+    /**
+     * 发送频道私信
+     */
+    sendDirectMessage(guildId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
+    /**
+     * 获取频道私信消息
+     */
+    getDirectMessage(guildId: string, messageId: string): Promise<PrivateMessageEvent>;
+    /**
+     * 撤回频道私信
+     */
+    recallDirectMessage(guildId: string, messageId: string, hidetip?: boolean): Promise<boolean>;
+    /**
+     * 发送私聊消息
+     */
+    sendPrivateMessage(userId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
+    /**
+     * 撤回私聊消息
+     */
+    recallPrivateMessage(userId: string, messageId: string): Promise<boolean>;
+    /**
+     * 发送群消息
+     */
+    sendGroupMessage(groupId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
+    /**
+     * 撤回群消息
+     */
+    recallGroupMessage(groupId: string, messageId: string): Promise<boolean>;
+    /**
+     * 核心发送消息方法
+     */
+    private sendMessage;
+    /**
+     * 上传文件
+     */
+    private uploadFile;
+    /**
+     * 发送普通消息
+     */
+    private sendRegularMessage;
+    /**
+     * 检查是否为审核结果
+     */
+    private isAuditResult;
+    /**
+     * 批量发送消息
+     */
+    sendBatch(endpointPath: string, messages: Sendable[], options?: SendOptions): Promise<SendResult[]>;
+    /**
+     * 工具方法：延迟
+     */
+    private delay;
+}
+/**
  * 频道服务类 - 负责所有频道相关的API操作
  */
 export class GuildService {
@@ -2340,96 +2441,6 @@ export class ChannelService {
      * 取消置顶频道消息
      */
     unpinMessage(channelId: string, messageId: string): Promise<boolean>;
-}
-/**
- * 消息服务类 - 负责所有消息相关的API操作
- */
-export interface SendOptions {
-    quote?: boolean;
-    timeout?: number;
-    retries?: number;
-}
-export interface SendResult {
-    id: string;
-    timestamp: number;
-    ext_info?: {
-        ref_idx?: string;
-        [key: string]: unknown;
-    };
-    [key: string]: any;
-}
-export class MessageService {
-    private request;
-    private appid;
-    constructor(request: AxiosInstance, appid: string);
-    /**
-     * 获取子频道消息
-     */
-    getGuildMessage(channelId: string, messageId: string): Promise<GuildMessageEvent>;
-    /**
-     * 发送频道消息
-     */
-    sendGuildMessage(channelId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
-    /**
-     * 撤回频道消息
-     */
-    recallGuildMessage(channelId: string, messageId: string, hideWarning?: boolean): Promise<boolean>;
-    /**
-     * 创建频道私信会话
-     */
-    createDirectSession(guildId: string, userId: string): Promise<DMS>;
-    /**
-     * 发送频道私信
-     */
-    sendDirectMessage(guildId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
-    /**
-     * 获取频道私信消息
-     */
-    getDirectMessage(guildId: string, messageId: string): Promise<PrivateMessageEvent>;
-    /**
-     * 撤回频道私信
-     */
-    recallDirectMessage(guildId: string, messageId: string, hidetip?: boolean): Promise<boolean>;
-    /**
-     * 发送私聊消息
-     */
-    sendPrivateMessage(userId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
-    /**
-     * 撤回私聊消息
-     */
-    recallPrivateMessage(userId: string, messageId: string): Promise<boolean>;
-    /**
-     * 发送群消息
-     */
-    sendGroupMessage(groupId: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<SendResult>;
-    /**
-     * 撤回群消息
-     */
-    recallGroupMessage(groupId: string, messageId: string): Promise<boolean>;
-    /**
-     * 核心发送消息方法
-     */
-    private sendMessage;
-    /**
-     * 上传文件
-     */
-    private uploadFile;
-    /**
-     * 发送普通消息
-     */
-    private sendRegularMessage;
-    /**
-     * 检查是否为审核结果
-     */
-    private isAuditResult;
-    /**
-     * 批量发送消息
-     */
-    sendBatch(endpointPath: string, messages: Sendable[], options?: SendOptions): Promise<SendResult[]>;
-    /**
-     * 工具方法：延迟
-     */
-    private delay;
 }
 /**
  * 成员服务类 - 负责所有成员相关的API操作
@@ -2637,6 +2648,7 @@ export type ApiResponse<T> = {
     message?: string;
     error?: any;
 };
+import type { SendOptions } from "services/message";
 export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPlatform = ApplicationPlatform> extends Client<T, M> {
     readonly messageBuilder: MessageBuilder;
     readonly messageService: MessageService;
@@ -2884,7 +2896,7 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    sendPrivateMessage(user_id: string, message: Sendable, source?: Quotable): Promise<SendResult>;
+    sendPrivateMessage(user_id: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<import("@/services/message").SendResult>;
     /**
      * 撤回私聊消息
      * @param user_id
@@ -2897,7 +2909,7 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    sendGroupMessage(group_id: string, message: Sendable, source?: Quotable): Promise<SendResult>;
+    sendGroupMessage(group_id: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<import("@/services/message").SendResult>;
     /**
      * 撤回群消息
      * @param group_id
@@ -2925,7 +2937,7 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    sendDirectMessage(guild_id: string, message: Sendable, source?: Quotable): Promise<SendResult>;
+    sendDirectMessage(guild_id: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<import("@/services/message").SendResult>;
     /**
      * 获取频道私信
      * @param guild_id
@@ -2945,7 +2957,7 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    sendGuildMessage(channel_id: string, message: Sendable, source?: Quotable): Promise<SendResult>;
+    sendGuildMessage(channel_id: string, message: Sendable, source?: Quotable, options?: SendOptions): Promise<import("@/services/message").SendResult>;
     /**
      * 撤回频道消息
      * @param channel_id

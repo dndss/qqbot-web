@@ -15,10 +15,10 @@ export class PrivateMessageEvent extends Message implements MessageEvent {
     async recall(){
         if(this.sub_type==='direct') return this.bot.recallDirectMessage(this.guild_id,this.message_id)
     }
-    async reply(message: Sendable) {
+    async reply(message: Sendable, quote = false) {
         return this.sub_type === 'direct' ?
-            this.bot.sendDirectMessage(this.guild_id, message, this) :
-            this.bot.sendPrivateMessage(this.user_id, message, this)
+            this.bot.sendDirectMessage(this.guild_id, message, this, {quote}) :
+            this.bot.sendPrivateMessage(this.user_id, message, this, {quote})
     }
 }
 export class MessageAuditEvent{
@@ -51,8 +51,8 @@ export class GroupMessageEvent extends Message implements MessageEvent {
         this.message_type = 'group'
     }
 
-    async reply(message: Sendable) {
-        return this.bot.sendGroupMessage(this.group_id, message, this)
+    async reply(message: Sendable, quote = false) {
+        return this.bot.sendGroupMessage(this.group_id, message, this, {quote})
     }
 }
 
@@ -95,8 +95,8 @@ export class GuildMessageEvent extends Message implements MessageEvent {
      * 回复消息
      * @param message {Sendable} 回复内容
      */
-    async reply(message: Sendable) {
-        return this.bot.sendGuildMessage(this.channel_id, message, this)
+    async reply(message: Sendable, quote = false) {
+        return this.bot.sendGuildMessage(this.channel_id, message, this, {quote})
     }
 
     /**

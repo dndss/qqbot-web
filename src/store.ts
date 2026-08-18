@@ -147,6 +147,12 @@ export class JsonStore {
     return this.#database.conversations.find((item) => item.id === id)
   }
 
+  getMessage(conversationId: string, messageId: string): StoredMessage | undefined {
+    return this.#database.messages.find(
+      (message) => message.conversationId === conversationId && message.id === messageId,
+    )
+  }
+
   listMessages(conversationId: string, limit = 200): StoredMessage[] {
     return this.#database.messages
       .filter((message) => message.conversationId === conversationId)
@@ -182,6 +188,23 @@ export class JsonStore {
     await this.#persist()
   }
 
+  async updateMessage(
+    conversationId: string,
+    messageId: string,
+    patch: Partial<StoredMessage>,
+  ): Promise<StoredMessage> {
+    const message = this.getMessage(conversationId, messageId)
+    if (!message) throw new Error('消息不存在')
+    Object.assign(message, patch, { id: message.id, conversationId: message.conversationId })
+    const conversation = this.getConversation(conversationId)
+    const latest = this.#database.messages
+      .filter((item) => item.conversationId === conversationId)
+      .at(-1)
+    if (conversation && latest?.id === message.id) conversation.lastMessage = message.content
+    await this.#persist()
+    return structuredClone(message)
+  }
+
   async updateConversation(id: string, patch: Partial<Conversation>): Promise<Conversation> {
     const conversation = this.getConversation(id)
     if (!conversation) throw new Error('会话不存在')
@@ -200,6 +223,11 @@ export class JsonStore {
     this.#database = await this.#readJson<Database>(path, legacyFallback ?? EMPTY_DATABASE)
     this.#database.conversations ??= []
     this.#database.messages ??= []
+    for (const message of this.#database.messages) {
+      if (message.direction === 'incoming' && !message.senderOpenid && message.senderId !== 'unknown') {
+        message.senderOpenid = message.senderId
+      }
+    }
     if (legacyFallback) await this.#writeJson(path, this.#database)
   }
 

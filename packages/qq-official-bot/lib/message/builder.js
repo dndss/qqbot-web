@@ -38,7 +38,6 @@ var __importStar = (this && this.__importStar) || (function () {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MessageBuilder = void 0;
 const utils_1 = require("../utils");
-const crypto_1 = require("crypto");
 const fs = __importStar(require("node:fs/promises"));
 const path = __importStar(require("node:path"));
 const node_url_1 = require("node:url");
@@ -47,21 +46,27 @@ const node_url_1 = require("node:url");
  * 专门负责将Sendable类型的消息转换为API所需的格式
  */
 class MessageBuilder {
-    constructor(appid, isGuild, source) {
+    constructor(appid, isGuild, source, quote = false) {
         this.appid = appid;
         this.isGuild = isGuild;
         this.source = source;
+        this.quote = quote;
         this.buttons = [];
         this.isFile = false;
         this.contentType = 'application/json';
         this.brief = '';
         this.messagePayload = {
-            msg_seq: (0, crypto_1.randomInt)(1, 1000000),
             content: ''
         };
         this.filePayload = {};
         if (source?.id) {
             this.messagePayload.msg_id = source.id;
+            this.messagePayload.msg_seq = 1;
+        }
+        if (quote && source?.msg_idx) {
+            this.messagePayload.message_reference = {
+                message_id: source.msg_idx
+            };
         }
         if (source?.event_id) {
             this.messagePayload.event_id = source.event_id;
@@ -149,16 +154,21 @@ class MessageBuilder {
      * 处理回复元素
      */
     handleReply(elem) {
+        var _a;
         if (elem.data.event_id) {
             this.messagePayload.event_id = elem.data.event_id;
             this.brief += `<reply,event_id=${elem.data.event_id}>`;
         }
         else if (elem.data.id) {
             this.messagePayload.msg_id = elem.data.id;
-            this.messagePayload.message_reference = {
-                message_id: elem.data.id
-            };
+            (_a = this.messagePayload).msg_seq ?? (_a.msg_seq = 1);
             this.brief += `<reply,msg_id=${elem.data.id}>`;
+            if (elem.data.msg_idx) {
+                this.messagePayload.message_reference = {
+                    message_id: elem.data.msg_idx
+                };
+                this.brief += `<reference,msg_idx=${elem.data.msg_idx}>`;
+            }
         }
     }
     /**

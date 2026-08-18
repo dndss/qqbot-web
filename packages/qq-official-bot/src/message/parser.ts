@@ -107,6 +107,8 @@ export class Message {
     group_id?: string
     id: string
     message_id: string
+    /** 当前消息的引用索引，用于后续引用该消息 */
+    msg_idx?: string
     sender: Message.Sender
     user_id: string
 

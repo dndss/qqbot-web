@@ -5,6 +5,8 @@ const state = {
   messages: [],
   status: { state: 'disconnected', error: '', selfId: null },
   query: '',
+  replyTarget: null,
+  mentions: [],
 }
 
 const elements = Object.fromEntries(
@@ -179,12 +181,172 @@ function renderMessagePart(container, part) {
 }
 
 function renderMessageContent(container, message) {
+  if (message.status === 'recalled') {
+    container.classList.add('recalled')
+    container.textContent = '[消息已撤回]'
+    return
+  }
   if (!Array.isArray(message.parts) || message.parts.length === 0) {
     container.textContent = message.content
     return
   }
   container.classList.add('has-rich-content')
-  for (const part of message.parts) renderMessagePart(container, part)
+  for (const part of message.parts) {
+    if (part.type === 'reply' && message.refMsgIdx) continue
+    renderMessagePart(container, part)
+  }
+}
+
+function closeContextMenu() {
+  elements.contextMenu.classList.add('hidden')
+  elements.contextMenu.replaceChildren()
+}
+
+function showContextMenu(event, actions) {
+  event.preventDefault()
+  event.stopPropagation()
+  elements.contextMenu.replaceChildren()
+  for (const action of actions) {
+    if (!action) {
+      const separator = document.createElement('div')
+      separator.className = 'context-menu-separator'
+      elements.contextMenu.append(separator)
+      continue
+    }
+    const button = document.createElement('button')
+    button.type = 'button'
+    button.textContent = action.label
+    if (action.danger) button.classList.add('danger')
+    button.addEventListener('click', async () => {
+      closeContextMenu()
+      try {
+        await action.run()
+      } catch (error) {
+        showToast(error.message, true)
+      }
+    })
+    elements.contextMenu.append(button)
+  }
+  elements.contextMenu.classList.remove('hidden')
+  const rect = elements.contextMenu.getBoundingClientRect()
+  elements.contextMenu.style.left = `${Math.max(6, Math.min(event.clientX, window.innerWidth - rect.width - 6))}px`
+  elements.contextMenu.style.top = `${Math.max(6, Math.min(event.clientY, window.innerHeight - rect.height - 6))}px`
+  elements.contextMenu.querySelector('button')?.focus()
+}
+
+function renderReplyPreview() {
+  const target = state.replyTarget
+  elements.replyPreview.classList.toggle('hidden', !target)
+  if (!target) return
+  elements.replyPreviewLabel.textContent = target.quote
+    ? `引用回复 ${target.senderName}`
+    : `不引用回复 ${target.senderName}`
+  elements.replyPreviewContent.textContent = target.content
+}
+
+function resetComposer(clearText = false) {
+  state.replyTarget = null
+  state.mentions = []
+  if (clearText) {
+    elements.messageInput.value = ''
+    elements.messageInput.style.height = 'auto'
+  }
+  renderReplyPreview()
+}
+
+function selectReplyTarget(message, quote) {
+  if (message.status === 'recalled') throw new Error('已撤回的消息不能回复')
+  if (quote && !message.msgIdx) throw new Error('该消息没有 msg_idx/ref_idx，无法引用回复')
+  state.replyTarget = {
+    messageId: message.id,
+    quote,
+    senderName: message.senderName,
+    content: message.content,
+  }
+  renderReplyPreview()
+  elements.messageInput.focus()
+}
+
+function insertMention(message) {
+  const conversation = state.conversations.find((item) => item.id === state.selectedId)
+  if (conversation?.type !== 'group' || message.direction !== 'incoming' || !message.senderOpenid) {
+    throw new Error('该消息没有可用的群成员 OpenID')
+  }
+  const token = `@${message.senderName}`
+  const input = elements.messageInput
+  const start = input.selectionStart ?? input.value.length
+  const end = input.selectionEnd ?? start
+  const before = input.value.slice(0, start)
+  const after = input.value.slice(end)
+  const prefix = before && !/\s$/.test(before) ? ' ' : ''
+  const suffix = after && /^\s/.test(after) ? '' : ' '
+  const inserted = `${prefix}${token}${suffix}`
+  if (before.length + inserted.length + after.length > input.maxLength) throw new Error('输入内容已达到长度限制')
+  input.value = `${before}${inserted}${after}`
+  state.mentions.push({ messageId: message.id, token })
+  const cursor = before.length + inserted.length
+  input.focus()
+  input.setSelectionRange(cursor, cursor)
+  input.dispatchEvent(new Event('input'))
+}
+
+async function recallFromMenu(message) {
+  if (!state.selectedId) return
+  if (!window.confirm('确定撤回这条消息？')) return
+  const updated = await api(`/api/conversations/${encodeURIComponent(state.selectedId)}/messages/${encodeURIComponent(message.id)}`, {
+    method: 'DELETE',
+  })
+  const index = state.messages.findIndex((item) => item.id === updated.id)
+  if (index >= 0) state.messages[index] = updated
+  await loadConversations()
+  renderMessages()
+  showToast('消息已撤回')
+}
+
+async function muteFromMenu(message, durationMinutes) {
+  if (!state.selectedId) return
+  const result = await api(`/api/conversations/${encodeURIComponent(state.selectedId)}/members/${encodeURIComponent(message.id)}/mute`, {
+    method: 'POST',
+    body: JSON.stringify({ durationMinutes }),
+  })
+  showToast(result.mutedUntil ? `已禁言至 ${formatDateTime(result.mutedUntil)}` : '已解除禁言')
+}
+
+function openMessageMenu(event, message) {
+  const actions = []
+  if (message.direction === 'outgoing' && message.status !== 'recalled') {
+    actions.push({ label: '撤回', danger: true, run: () => recallFromMenu(message) }, null)
+  }
+  if (message.status !== 'recalled') {
+    actions.push(
+      { label: '引用回复', run: () => selectReplyTarget(message, true) },
+      { label: '不引用回复', run: () => selectReplyTarget(message, false) },
+    )
+  }
+  if (actions.length) showContextMenu(event, actions)
+}
+
+function openAvatarMenu(event, message) {
+  const conversation = state.conversations.find((item) => item.id === state.selectedId)
+  if (conversation?.type !== 'group' || message.direction !== 'incoming' || !message.senderOpenid) return
+  showContextMenu(event, [
+    { label: `@${message.senderName}`, run: () => insertMention(message) },
+    null,
+    { label: '禁言 10 分钟', run: () => muteFromMenu(message, 10) },
+    { label: '禁言 1 小时', run: () => muteFromMenu(message, 60) },
+    { label: '禁言 1 天', run: () => muteFromMenu(message, 1440) },
+    {
+      label: '自定义禁言…',
+      run: () => {
+        const value = window.prompt('请输入禁言分钟数（1-43200）', '10')
+        if (value === null) return
+        const minutes = Number(value)
+        if (!Number.isInteger(minutes) || minutes < 1 || minutes > 43_200) throw new Error('请输入 1 到 43200 之间的整数')
+        return muteFromMenu(message, minutes)
+      },
+    },
+    { label: '解除禁言', run: () => muteFromMenu(message, 0) },
+  ])
 }
 
 function renderStatus() {
@@ -231,6 +393,8 @@ function applyAccountSnapshot(snapshot) {
   state.status = snapshot.status || state.status
   state.selectedId = null
   state.messages = []
+  resetComposer(true)
+  closeContextMenu()
   renderAccounts()
   renderStatus()
   renderConversations()
@@ -299,6 +463,7 @@ function renderMessages() {
     const avatar = document.createElement('span')
     avatar.className = 'message-avatar'
     renderAvatar(avatar, message.direction === 'outgoing' ? 'Q' : message.senderName, message.direction === 'incoming' ? message.avatarUrl : undefined)
+    avatar.addEventListener('contextmenu', (event) => openAvatarMenu(event, message))
     const stack = document.createElement('div')
     stack.className = 'message-stack'
     const meta = document.createElement('div')
@@ -319,7 +484,18 @@ function renderMessages() {
     const bubble = document.createElement('div')
     bubble.className = 'message-bubble'
     renderMessageContent(bubble, message)
-    stack.append(meta, bubble)
+    bubble.addEventListener('contextmenu', (event) => openMessageMenu(event, message))
+    stack.append(meta)
+    if (message.refMsgIdx) {
+      const quoted = state.messages.find((item) => item.msgIdx === message.refMsgIdx)
+      const preview = document.createElement('div')
+      preview.className = 'message-quote-preview'
+      preview.textContent = quoted
+        ? `${quoted.senderName}：${quoted.content}`
+        : `引用消息索引：${message.refMsgIdx}`
+      stack.append(preview)
+    }
+    stack.append(bubble)
     row.append(avatar, stack)
     elements.messageList.append(row)
   }
@@ -401,6 +577,8 @@ async function loadConversations() {
 }
 
 async function selectConversation(id) {
+  if (state.selectedId !== id) resetComposer(true)
+  closeContextMenu()
   state.selectedId = id
   state.messages = await api(`/api/conversations/${encodeURIComponent(id)}/messages`)
   await api(`/api/conversations/${encodeURIComponent(id)}/read`, { method: 'POST' })
@@ -579,6 +757,21 @@ elements.messageInput.addEventListener('input', () => {
   elements.messageInput.style.height = `${Math.min(elements.messageInput.scrollHeight, 140)}px`
 })
 
+elements.cancelReply.addEventListener('click', () => {
+  state.replyTarget = null
+  renderReplyPreview()
+  elements.messageInput.focus()
+})
+
+document.addEventListener('pointerdown', (event) => {
+  if (!elements.contextMenu.contains(event.target)) closeContextMenu()
+})
+document.addEventListener('keydown', (event) => {
+  if (event.key === 'Escape') closeContextMenu()
+})
+window.addEventListener('resize', closeContextMenu)
+elements.messageList.addEventListener('scroll', closeContextMenu, { passive: true })
+
 elements.composer.addEventListener('submit', async (event) => {
   event.preventDefault()
   const content = elements.messageInput.value.trim()
@@ -587,10 +780,15 @@ elements.composer.addEventListener('submit', async (event) => {
   try {
     const message = await api(`/api/conversations/${encodeURIComponent(state.selectedId)}/messages`, {
       method: 'POST',
-      body: JSON.stringify({ content }),
+      body: JSON.stringify({
+        content,
+        ...(state.replyTarget ? {
+          reply: { messageId: state.replyTarget.messageId, quote: state.replyTarget.quote },
+        } : {}),
+        mentions: state.mentions.filter((mention) => content.includes(mention.token)),
+      }),
     })
-    elements.messageInput.value = ''
-    elements.messageInput.style.height = 'auto'
+    resetComposer(true)
     if (!state.messages.some((item) => item.id === message.id)) state.messages.push(message)
     await loadConversations()
     renderMessages()
@@ -616,6 +814,16 @@ eventSource.addEventListener('message', async (event) => {
     await api(`/api/conversations/${encodeURIComponent(state.selectedId)}/read`, { method: 'POST' })
     renderMessages()
   }
+})
+eventSource.addEventListener('message-update', async (event) => {
+  const updated = JSON.parse(event.data)
+  if (updated.conversationId === state.selectedId) {
+    const index = state.messages.findIndex((item) => item.id === updated.id)
+    if (index >= 0) state.messages[index] = updated
+    else state.messages.push(updated)
+    renderMessages()
+  }
+  await loadConversations()
 })
 eventSource.addEventListener('conversation', (event) => {
   const updated = JSON.parse(event.data)

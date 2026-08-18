@@ -26,9 +26,46 @@ export interface SendResult {
     [key: string]: any;
 }
 
+const REPLY_SEQUENCE_TTL = 5 * 60 * 1000;
+
+interface ReplySequenceEntry {
+    sequence: number;
+    expiresAt: number;
+}
+
 export class MessageService {
 
+    private readonly replySequences = new Map<string, ReplySequenceEntry>();
+
     constructor(private request: AxiosInstance, private appid: string) {
+    }
+
+    private nextReplySequence(messageId: string): number {
+        const now = Date.now();
+        const current = this.replySequences.get(messageId);
+        if (current && current.expiresAt > now) {
+            current.sequence += 1;
+            return current.sequence;
+        }
+
+        const entry = {
+            sequence: 1,
+            expiresAt: now + REPLY_SEQUENCE_TTL,
+        };
+        this.replySequences.set(messageId, entry);
+        const timer = setTimeout(() => {
+            if (this.replySequences.get(messageId) === entry)
+                this.replySequences.delete(messageId);
+        }, REPLY_SEQUENCE_TTL);
+        timer.unref?.();
+        return entry.sequence;
+    }
+
+    private releaseReplySequence(messageId: string, sequence: number): void {
+        const current = this.replySequences.get(messageId);
+        if (!current || current.sequence !== sequence) return;
+        if (sequence === 1) this.replySequences.delete(messageId);
+        else current.sequence -= 1;
     }
 
     /**
@@ -123,17 +160,30 @@ export class MessageService {
      */
     private async sendMessage(endpointPath: string, message: Sendable, source?: Quotable, options: SendOptions = {}): Promise<SendResult> {
         // 构建消息
-        const messageBuilder = new MessageBuilder(this.appid, !endpointPath.startsWith('/v2'), source);
+        const messageBuilder = new MessageBuilder(this.appid, !endpointPath.startsWith('/v2'), source, options.quote);
         const buildResult = await messageBuilder.build(message);
-        
-        // 处理文件发送
-        if (buildResult.isFile) {
-            const uploaded = await this.uploadFile(endpointPath, buildResult);
-            buildResult.messagePayload.media = { file_info: uploaded.file_info };
+
+        const replyMessageId = buildResult.messagePayload.msg_id;
+        let replySequence: number | undefined;
+        if (replyMessageId) {
+            replySequence = this.nextReplySequence(replyMessageId);
+            buildResult.messagePayload.msg_seq = replySequence;
         }
 
-        // 发送普通消息
-        return await this.sendRegularMessage(endpointPath, buildResult, options);
+        try {
+            // 处理文件发送
+            if (buildResult.isFile) {
+                const uploaded = await this.uploadFile(endpointPath, buildResult);
+                buildResult.messagePayload.media = { file_info: uploaded.file_info };
+            }
+
+            // 发送普通消息
+            return await this.sendRegularMessage(endpointPath, buildResult, options);
+        } catch (error) {
+            if (replyMessageId && replySequence !== undefined)
+                this.releaseReplySequence(replyMessageId, replySequence);
+            throw error;
+        }
 
     }
     /**

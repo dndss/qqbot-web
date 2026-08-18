@@ -8,6 +8,8 @@ export enum MusicPlatform {
 export interface Quotable {
     id?: string
     event_id?: string
+    /** 当前消息的引用索引，用于 message_reference.message_id */
+    msg_idx?: string
 }
 
 export interface ForwardMessageNode {

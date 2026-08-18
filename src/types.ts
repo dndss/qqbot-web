@@ -66,13 +66,19 @@ export interface StoredMessage {
   conversationId: string
   direction: 'incoming' | 'outgoing'
   senderId: string
+  senderOpenid?: string
   senderName: string
   avatarUrl?: string
   roles?: SenderRole[]
   content: string
   parts?: MessagePart[]
+  /** 当前消息的引用索引；收到的消息来自 msg_idx，Bot 消息来自 ext_info.ref_idx。 */
+  msgIdx?: string
+  /** 当前消息所引用的另一条消息索引。 */
+  refMsgIdx?: string
   timestamp: number
-  status: 'sent' | 'received' | 'pending' | 'failed'
+  status: 'sent' | 'received' | 'pending' | 'failed' | 'recalled'
+  recalledAt?: number
 }
 
 export interface Database {
@@ -88,6 +94,10 @@ export interface IncomingMessageLike {
   group_name?: string
   message_id?: string
   id?: string
+  msg_idx?: string
+  message_scene?: {
+    ext?: unknown[]
+  }
   raw_message?: string
   message?: Array<{
     type?: string

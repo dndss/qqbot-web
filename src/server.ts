@@ -3,7 +3,7 @@ import { readFile } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
-import { Bot, ReceiverMode } from 'qq-official-bot'
+import { Bot, ReceiverMode, segment } from 'qq-official-bot'
 import { MediaCache } from './media-cache.ts'
 import { JsonStore } from './store.ts'
 import type { BotConfig, Conversation, ConversationType, GroupBotState, IncomingMessageLike, MessagePart, SenderRole, StoredMessage } from './types.ts'
@@ -182,6 +182,20 @@ function messagePreview(parts: MessagePart[]): string {
   }).join('').trim()
 }
 
+function messageSceneIndexes(event: IncomingMessageLike): { msgIdx?: string; refMsgIdx?: string } {
+  let msgIdx = event.msg_idx
+  let refMsgIdx: string | undefined
+  const ext = Array.isArray(event.message_scene?.ext) ? event.message_scene.ext : []
+  for (const value of ext) {
+    if (typeof value !== 'string') continue
+    if (value.startsWith('msg_idx=')) msgIdx = value.slice('msg_idx='.length)
+    else if (value.startsWith('msgidx=')) msgIdx = value.slice('msgidx='.length)
+    else if (value.startsWith('ref_msg_idx=')) refMsgIdx = value.slice('ref_msg_idx='.length)
+    else if (value.startsWith('refmsgidx=')) refMsgIdx = value.slice('refmsgidx='.length)
+  }
+  return { ...(msgIdx ? { msgIdx } : {}), ...(refMsgIdx ? { refMsgIdx } : {}) }
+}
+
 async function getGroupProfile(groupOpenid: string): Promise<Partial<Conversation>> {
   const existing = store.getConversation(`group:${groupOpenid}`)
   if (existing?.groupMemberCount !== undefined || existing?.description || existing?.category || existing?.tags?.length) {
@@ -291,6 +305,7 @@ async function normalizeIncoming(event: IncomingMessageLike, accountId: string):
   const timestamp = event.timestamp ? event.timestamp * 1000 : Date.now()
   const parts = await normalizeMessageParts(event, accountId)
   const content = messagePreview(parts) || event.raw_message?.trim() || '[暂不支持展示的消息]'
+  const indexes = messageSceneIndexes(event)
   return {
     conversation: {
       id: conversationId,
@@ -309,11 +324,13 @@ async function normalizeIncoming(event: IncomingMessageLike, accountId: string):
       conversationId,
       direction: 'incoming',
       senderId,
+      senderOpenid,
       senderName,
       avatarUrl: senderAvatarUrl,
       roles: senderRoles(event),
       content,
       ...(parts.length ? { parts } : {}),
+      ...indexes,
       timestamp,
       status: 'received',
     },
@@ -377,15 +394,43 @@ async function disconnectBot(): Promise<void> {
   setConnectionState('disconnected')
 }
 
-async function sendMessage(conversation: Conversation, content: string): Promise<StoredMessage> {
+interface SendMessageInput {
+  content: string
+  reply?: { messageId: string; quote: boolean }
+  mentions?: Array<{ messageId: string; token: string }>
+}
+
+function markdownContent(conversation: Conversation, input: SendMessageInput): string {
+  let content = input.content.replace(/@/g, '@\u200b').replace(/<qqbot-/g, '<qqbot-\u200b')
+  if (conversation.type !== 'group') return content
+  for (const mention of input.mentions ?? []) {
+    const target = store.getMessage(conversation.id, mention.messageId)
+    if (!target?.senderOpenid || target.direction !== 'incoming') continue
+    const token = mention.token.trim()
+    if (!token) continue
+    const escapedToken = token.replace(/@/g, '@\u200b').replace(/<qqbot-/g, '<qqbot-\u200b')
+    const index = content.indexOf(escapedToken)
+    if (index < 0) continue
+    const tag = `<qqbot-at-user id="${target.senderOpenid}" />`
+    content = `${content.slice(0, index)}${tag}${content.slice(index + escapedToken.length)}`
+  }
+  return content
+}
+
+async function sendMessage(conversation: Conversation, input: SendMessageInput): Promise<StoredMessage> {
   if (!bot || connectionState !== 'connected') throw new Error('机器人尚未连接')
-  let result: { id?: string; timestamp?: number }
+  const replyTarget = input.reply ? store.getMessage(conversation.id, input.reply.messageId) : undefined
+  if (input.reply && !replyTarget) throw new Error('回复的消息不存在')
+  if (input.reply?.quote && !replyTarget?.msgIdx) throw new Error('该消息没有引用索引，无法引用回复')
+  const source = replyTarget ? { id: replyTarget.id, msg_idx: replyTarget.msgIdx } : undefined
+  const sendable = segment.markdown(markdownContent(conversation, input))
+  let result: { id?: string; timestamp?: number; ext_info?: { ref_idx?: string } }
   switch (conversation.type) {
     case 'private':
-      result = await bot.sendPrivateMessage(conversation.targetId, content)
+      result = await bot.sendPrivateMessage(conversation.targetId, sendable, source, { quote: input.reply?.quote === true })
       break
     case 'group':
-      result = await bot.sendGroupMessage(conversation.targetId, content)
+      result = await bot.sendGroupMessage(conversation.targetId, sendable, source, { quote: input.reply?.quote === true })
       break
   }
 
@@ -395,14 +440,62 @@ async function sendMessage(conversation: Conversation, content: string): Promise
     direction: 'outgoing',
     senderId: bot.self_id || 'bot',
     senderName: '机器人',
-    content,
-    parts: [{ type: 'text', text: content }],
+    content: input.content,
+    parts: [{ type: 'text', text: input.content }],
+    ...(result.ext_info?.ref_idx ? { msgIdx: result.ext_info.ref_idx } : {}),
+    ...(input.reply?.quote && replyTarget?.msgIdx ? { refMsgIdx: replyTarget.msgIdx } : {}),
     timestamp: result.timestamp ? result.timestamp * 1000 : Date.now(),
     status: 'sent',
   }
   await store.addMessage(conversation, message)
   publish('message', { conversation: store.getConversation(conversation.id), message })
   return message
+}
+
+async function recallMessage(conversation: Conversation, messageId: string): Promise<StoredMessage> {
+  if (!bot || connectionState !== 'connected') throw new Error('机器人尚未连接')
+  const message = store.getMessage(conversation.id, messageId)
+  if (!message) throw new Error('消息不存在')
+  if (message.direction !== 'outgoing') throw new Error('只能撤回当前 Bot 发送的消息')
+  if (message.status === 'recalled') return message
+  const recalled = conversation.type === 'private'
+    ? await bot.recallPrivateMessage(conversation.targetId, message.id)
+    : await bot.recallGroupMessage(conversation.targetId, message.id)
+  if (!recalled) throw new Error('QQ 接口未确认消息撤回成功')
+  const updated = await store.updateMessage(conversation.id, message.id, {
+    content: '[消息已撤回]',
+    parts: [],
+    status: 'recalled',
+    recalledAt: Date.now(),
+  })
+  publish('message-update', updated)
+  return updated
+}
+
+async function setMemberMute(
+  conversation: Conversation,
+  messageId: string,
+  durationMinutes: number,
+): Promise<{ ok: true; mutedUntil: string | null }> {
+  if (!bot || connectionState !== 'connected') throw new Error('机器人尚未连接')
+  if (conversation.type !== 'group') throw new Error('只有群聊支持成员禁言')
+  const message = store.getMessage(conversation.id, messageId)
+  if (!message?.senderOpenid || message.direction !== 'incoming') throw new Error('无法确定该群成员的 OpenID')
+  if (!Number.isFinite(durationMinutes) || durationMinutes < 0 || durationMinutes > 43_200) {
+    throw new Error('禁言时长必须在 1 到 43200 分钟之间，解除禁言请使用 0')
+  }
+
+  const setting = await bot.getGroupRestrictChatSetting(conversation.targetId)
+  const alreadyMuted = setting.members.some((member) => member.member_openid === message.senderOpenid)
+  const mutedUntil = durationMinutes === 0
+    ? null
+    : new Date(Date.now() + durationMinutes * 60_000).toISOString()
+  await bot.setGroupMemberMuteState(conversation.targetId, [{
+    op: durationMinutes === 0 ? 'del' : alreadyMuted ? 'update' : 'add',
+    member_openid: message.senderOpenid,
+    mute_expire_at: mutedUntil ?? '',
+  }])
+  return { ok: true, mutedUntil }
 }
 
 function errorMessage(error: unknown): string {
@@ -546,7 +639,25 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       const content = String(payload.content ?? '').trim()
       if (!content) throw new Error('消息内容不能为空')
       if (content.length > 2000) throw new Error('消息不能超过 2000 个字符')
-      sendJson(response, 201, await sendMessage(conversation, content))
+      const replyValue = payload.reply
+      const replyRecord = replyValue && typeof replyValue === 'object' && !Array.isArray(replyValue)
+        ? replyValue as Record<string, unknown>
+        : undefined
+      const replyMessageId = String(replyRecord?.messageId ?? '').trim()
+      const mentions = Array.isArray(payload.mentions)
+        ? payload.mentions.slice(0, 20).flatMap((value) => {
+          if (!value || typeof value !== 'object' || Array.isArray(value)) return []
+          const record = value as Record<string, unknown>
+          const messageId = String(record.messageId ?? '').trim()
+          const token = String(record.token ?? '').trim()
+          return messageId && token ? [{ messageId, token }] : []
+        })
+        : []
+      sendJson(response, 201, await sendMessage(conversation, {
+        content,
+        ...(replyMessageId ? { reply: { messageId: replyMessageId, quote: replyRecord?.quote === true } } : {}),
+        ...(mentions.length ? { mentions } : {}),
+      }))
       return true
     }
     if (action === 'read' && request.method === 'POST') {
@@ -554,6 +665,34 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       sendJson(response, 200, { ok: true })
       return true
     }
+  }
+
+  const messageActionMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)$/)
+  if (messageActionMatch && request.method === 'DELETE') {
+    const conversationId = decodeURIComponent(messageActionMatch[1])
+    const messageId = decodeURIComponent(messageActionMatch[2])
+    const conversation = store.getConversation(conversationId)
+    if (!conversation) {
+      sendJson(response, 404, { error: '会话不存在' })
+      return true
+    }
+    sendJson(response, 200, await recallMessage(conversation, messageId))
+    return true
+  }
+
+  const memberMuteMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/members\/([^/]+)\/mute$/)
+  if (memberMuteMatch && request.method === 'POST') {
+    const conversationId = decodeURIComponent(memberMuteMatch[1])
+    const messageId = decodeURIComponent(memberMuteMatch[2])
+    const conversation = store.getConversation(conversationId)
+    if (!conversation) {
+      sendJson(response, 404, { error: '会话不存在' })
+      return true
+    }
+    const payload = await readJson(request)
+    const durationMinutes = Number(payload.durationMinutes)
+    sendJson(response, 200, await setMemberMute(conversation, messageId, durationMinutes))
+    return true
   }
 
   const botStateMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/bot-state$/)

@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#eef3f8" />
     <title>QQ Bot 消息工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=7" />
+    <link rel="stylesheet" href="/styles.css?v=8" />
   </head>
   <body>
     <main class="app-shell">
@@ -58,7 +58,14 @@
           </header>
           <div id="message-list" class="message-list" aria-live="polite"></div>
           <form id="composer" class="composer">
-            <textarea id="message-input" rows="1" maxlength="2000" placeholder="输入消息，Enter 发送，Shift + Enter 换行"></textarea>
+            <div id="reply-preview" class="reply-preview hidden">
+              <div>
+                <strong id="reply-preview-label"></strong>
+                <span id="reply-preview-content"></span>
+              </div>
+              <button id="cancel-reply" class="icon-button" type="button" aria-label="取消回复">×</button>
+            </div>
+            <textarea id="message-input" rows="1" maxlength="2000" placeholder="输入 Markdown 消息，Enter 发送，Shift + Enter 换行"></textarea>
             <div class="composer-footer">
               <span id="composer-hint">官方协议的主动消息能力可能受限</span>
               <button id="send-button" class="primary-button" type="submit">发送</button>
@@ -120,7 +127,8 @@
       </form>
     </dialog>
 
+    <div id="context-menu" class="context-menu hidden" role="menu"></div>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="/app.js?v=6"></script>
+    <script type="module" src="/app.js?v=7"></script>
   </body>
 </html>

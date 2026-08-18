@@ -26,6 +26,7 @@ import { ActionNoticeEvent } from "@/events/notice";
 import { GuildMessageEvent } from "./events";
 import { ApplicationPlatform, Middleware, ReceiverMode } from "@/receivers";
 import { ResolveReceiver } from "@/receivers";
+import type { SendOptions } from "@/services/message";
 
 // 导入重构后的消息系统
 import { MessageBuilder, FileProcessor } from "@/message";
@@ -550,8 +551,8 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    async sendPrivateMessage(user_id: string, message: Sendable, source?: Quotable) {
-        return this.messageService.sendPrivateMessage(user_id, message, source);
+    async sendPrivateMessage(user_id: string, message: Sendable, source?: Quotable, options: SendOptions = {}) {
+        return this.messageService.sendPrivateMessage(user_id, message, source, options);
     }
     /**
      * 撤回私聊消息
@@ -568,8 +569,8 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    async sendGroupMessage(group_id: string, message: Sendable, source?: Quotable) {
-        return this.messageService.sendGroupMessage(group_id, message, source);
+    async sendGroupMessage(group_id: string, message: Sendable, source?: Quotable, options: SendOptions = {}) {
+        return this.messageService.sendGroupMessage(group_id, message, source, options);
     }
     /**
      * 撤回群消息
@@ -609,8 +610,8 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    async sendDirectMessage(guild_id: string, message: Sendable, source?: Quotable) {
-        return this.messageService.sendDirectMessage(guild_id, message, source);
+    async sendDirectMessage(guild_id: string, message: Sendable, source?: Quotable, options: SendOptions = {}) {
+        return this.messageService.sendDirectMessage(guild_id, message, source, options);
     }
 
     /**
@@ -637,8 +638,8 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
      * @param message
      * @param source
      */
-    async sendGuildMessage(channel_id: string, message: Sendable, source?: Quotable) {
-        return this.messageService.sendGuildMessage(channel_id, message, source);
+    async sendGuildMessage(channel_id: string, message: Sendable, source?: Quotable, options: SendOptions = {}) {
+        return this.messageService.sendGuildMessage(channel_id, message, source, options);
     }
 
     /**
