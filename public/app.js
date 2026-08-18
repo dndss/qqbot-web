@@ -93,6 +93,79 @@ function mediaFallback(label) {
   return fallback
 }
 
+function renderForwardAttachment(container, attachment) {
+  const item = document.createElement('div')
+  item.className = 'forward-attachment'
+  if (attachment.kind === 'image' && attachment.url) {
+    renderMessagePart(item, {
+      type: 'image',
+      url: attachment.url,
+      localUrl: attachment.localUrl,
+      name: attachment.name,
+    })
+  } else {
+    renderMessagePart(item, {
+      type: attachment.kind,
+      url: attachment.url,
+      name: attachment.name || attachment.rawType,
+    })
+  }
+  const details = [
+    attachment.animated ? '动图' : attachment.rawType,
+    attachment.width && attachment.height ? `${attachment.width}×${attachment.height}` : '',
+    attachment.sizeText || '',
+  ].filter(Boolean).join(' · ')
+  if (details) {
+    const meta = document.createElement('span')
+    meta.className = 'forward-attachment-meta'
+    meta.textContent = details
+    item.append(meta)
+  }
+  container.append(item)
+}
+
+function renderForwardNode(container, node, depth = 0) {
+  const item = document.createElement('div')
+  item.className = `forward-node ${depth ? 'nested' : ''}`
+  const sender = document.createElement('strong')
+  sender.className = 'forward-sender'
+  sender.textContent = node.senderName || '未知发送者'
+  item.append(sender)
+  if (node.content) {
+    const content = document.createElement('div')
+    content.className = 'forward-content'
+    content.textContent = node.content
+    item.append(content)
+  }
+  if (node.attachments?.length) {
+    const attachments = document.createElement('div')
+    attachments.className = 'forward-attachments'
+    for (const attachment of node.attachments) renderForwardAttachment(attachments, attachment)
+    item.append(attachments)
+  }
+  if (node.children?.length) {
+    const children = document.createElement('div')
+    children.className = 'forward-children'
+    for (const child of node.children) renderForwardNode(children, child, depth + 1)
+    item.append(children)
+  }
+  container.append(item)
+}
+
+function renderForwardMessage(container, part) {
+  const card = document.createElement('section')
+  card.className = 'forward-card'
+  const title = document.createElement('header')
+  title.className = 'forward-title'
+  title.textContent = part.title || '合并消息'
+  card.append(title)
+  const nodes = document.createElement('div')
+  nodes.className = 'forward-nodes'
+  for (const node of part.nodes || []) renderForwardNode(nodes, node)
+  card.append(nodes)
+  container.append(card)
+}
+
 function renderMessagePart(container, part) {
   if (!part || typeof part !== 'object') return
   switch (part.type) {
@@ -174,6 +247,9 @@ function renderMessagePart(container, part) {
       container.append(link)
       break
     }
+    case 'forward':
+      renderForwardMessage(container, part)
+      break
     case 'unsupported':
       container.append(mediaFallback(part.label || '[暂不支持的消息]'))
       break

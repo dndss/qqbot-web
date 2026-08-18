@@ -453,6 +453,29 @@ interface Quotable {
     event_id?: string
 }
 
+// message_type=102 合并转发附件
+interface ForwardMessageAttachment {
+    index: number
+    type: 'image' | 'video' | 'audio' | 'file'
+    raw_type: string
+    file_name?: string
+    width?: number
+    height?: number
+    size_text?: string
+    url?: string
+    animated?: boolean
+}
+
+// 合并转发节点；纯附件节点的 content 为空字符串
+interface ForwardMessageNode {
+    index: number
+    sender_name: string
+    content: string
+    attachments?: ForwardMessageAttachment[]
+    message_type?: 'forward'
+    children?: ForwardMessageNode[]
+}
+
 // 消息元素接口
 interface MessageElem {
     type: string

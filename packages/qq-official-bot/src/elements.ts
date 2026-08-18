@@ -12,10 +12,25 @@ export interface Quotable {
     msg_idx?: string
 }
 
+export interface ForwardMessageAttachment {
+    /** 节点内部的附件序号 */
+    index: number
+    type: 'image' | 'video' | 'audio' | 'file'
+    /** 官方原始类型，如“图片”“视频”“文件” */
+    raw_type: string
+    file_name?: string
+    width?: number
+    height?: number
+    size_text?: string
+    url?: string
+    animated?: boolean
+}
+
 export interface ForwardMessageNode {
     index: number
     sender_name: string
     content: string
+    attachments?: ForwardMessageAttachment[]
     message_type?: 'forward'
     children?: ForwardMessageNode[]
 }

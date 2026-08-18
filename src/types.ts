@@ -1,6 +1,33 @@
 export type ConversationType = 'private' | 'group'
 export type SenderRole = 'owner' | 'admin'
 
+export interface ForwardAttachmentPart {
+  index: number
+  kind: 'image' | 'video' | 'audio' | 'file'
+  rawType: string
+  name?: string
+  width?: number
+  height?: number
+  sizeText?: string
+  url?: string
+  localUrl?: string
+  animated?: boolean
+}
+
+export interface ForwardNodePart {
+  index: number
+  senderName: string
+  content: string
+  attachments?: ForwardAttachmentPart[]
+  children?: ForwardNodePart[]
+}
+
+export interface ForwardMessagePart {
+  type: 'forward'
+  title: string
+  nodes: ForwardNodePart[]
+}
+
 export type MessagePart =
   | { type: 'text'; text: string }
   | { type: 'image'; url: string; localUrl?: string; name?: string }
@@ -8,6 +35,7 @@ export type MessagePart =
   | { type: 'at'; userId: string; name?: string }
   | { type: 'reply'; messageId: string }
   | { type: 'video' | 'audio' | 'file'; url?: string; name?: string }
+  | ForwardMessagePart
   | { type: 'unsupported'; label: string }
 
 export interface GroupBotState {

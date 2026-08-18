@@ -5,8 +5,14 @@ import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { Bot, ReceiverMode, segment } from 'qq-official-bot'
 import { MediaCache } from './media-cache.ts'
+import {
+  cacheForwardImages,
+  hasUncachedForwardImages,
+  normalizeForwardData,
+  parseForwardText,
+} from './forward-message.ts'
 import { JsonStore } from './store.ts'
-import type { BotConfig, Conversation, ConversationType, GroupBotState, IncomingMessageLike, MessagePart, SenderRole, StoredMessage } from './types.ts'
+import type { BotConfig, Conversation, ConversationType, ForwardMessagePart, GroupBotState, IncomingMessageLike, MessagePart, SenderRole, StoredMessage } from './types.ts'
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -47,6 +53,7 @@ let connectionState: ConnectionState = 'disconnected'
 let connectionError = ''
 const groupProfileRequests = new Map<string, Promise<Partial<Conversation>>>()
 const groupBotStateRequests = new Map<string, Promise<GroupBotState>>()
+const forwardCacheRequests = new Map<string, Promise<void>>()
 
 await store.initialize()
 
@@ -154,7 +161,10 @@ async function normalizeMessagePart(
       return text ? { type: 'text', text } : { type: 'unsupported', label: '[Markdown 消息]' }
     }
     case 'forward':
-      return { type: 'unsupported', label: '[合并转发消息]' }
+      {
+        const forward = normalizeForwardData(data)
+        return forward ? cacheForwardImages(forward, accountId, mediaCache) : { type: 'unsupported', label: '[合并转发消息]' }
+      }
     default:
       return type ? { type: 'unsupported', label: `[${type} 消息]` } : undefined
   }
@@ -177,9 +187,54 @@ function messagePreview(parts: MessagePart[]): string {
       case 'video': return '[视频]'
       case 'audio': return '[音频]'
       case 'file': return `[文件${part.name ? `：${part.name}` : ''}]`
+      case 'forward': return `[${part.title}]`
       case 'unsupported': return part.label
     }
   }).join('').trim()
+}
+
+function forwardPart(message: StoredMessage): ForwardMessagePart | undefined {
+  return message.parts?.find((part): part is ForwardMessagePart => part.type === 'forward')
+}
+
+function scheduleForwardImageCache(conversationId: string, accountId: string): void {
+  const key = `${accountId}:${conversationId}`
+  if (forwardCacheRequests.has(key)) return
+  const request = (async () => {
+    const updates: Array<{ messageId: string; patch: Partial<StoredMessage> }> = []
+    for (const message of store.listMessages(conversationId, 200)) {
+      if (store.getActiveAccount()?.id !== accountId) return
+      const forward = forwardPart(message)
+      if (!forward || !hasUncachedForwardImages(forward)) continue
+      const cached = await cacheForwardImages(forward, accountId, mediaCache)
+      updates.push({
+        messageId: message.id,
+        patch: {
+          parts: message.parts?.map((part) => part === forward ? cached : part) ?? [cached],
+        },
+      })
+    }
+    if (!updates.length || store.getActiveAccount()?.id !== accountId) return
+    const changed = await store.updateMessages(conversationId, updates)
+    for (const message of changed) publish('message-update', message)
+  })().catch((error) => {
+    console.warn(`[ForwardCache] 缓存会话 ${conversationId} 的合并消息图片失败：${errorMessage(error)}`)
+  }).finally(() => forwardCacheRequests.delete(key))
+  forwardCacheRequests.set(key, request)
+}
+
+async function prepareConversationMessages(conversationId: string, limit: number): Promise<StoredMessage[]> {
+  const accountId = store.getActiveAccount()?.id
+  const messages = store.listMessages(conversationId, limit)
+  if (!accountId) return messages
+  const upgrades = messages.flatMap((message) => {
+    if (forwardPart(message)) return []
+    const parsed = parseForwardText(message.content)
+    return parsed ? [{ messageId: message.id, patch: { parts: [parsed] } }] : []
+  })
+  if (upgrades.length) await store.updateMessages(conversationId, upgrades)
+  scheduleForwardImageCache(conversationId, accountId)
+  return store.listMessages(conversationId, limit)
 }
 
 function messageSceneIndexes(event: IncomingMessageLike): { msgIdx?: string; refMsgIdx?: string } {
@@ -642,7 +697,10 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       return true
     }
     if (action === 'messages' && request.method === 'GET') {
-      sendJson(response, 200, store.listMessages(conversationId, Number(url.searchParams.get('limit') ?? 200)))
+      sendJson(response, 200, await prepareConversationMessages(
+        conversationId,
+        Number(url.searchParams.get('limit') ?? 200),
+      ))
       return true
     }
     if (action === 'messages' && request.method === 'POST') {

@@ -205,6 +205,21 @@ export class JsonStore {
     return structuredClone(message)
   }
 
+  async updateMessages(
+    conversationId: string,
+    updates: Array<{ messageId: string; patch: Partial<StoredMessage> }>,
+  ): Promise<StoredMessage[]> {
+    const changed: StoredMessage[] = []
+    for (const update of updates) {
+      const message = this.getMessage(conversationId, update.messageId)
+      if (!message) continue
+      Object.assign(message, update.patch, { id: message.id, conversationId: message.conversationId })
+      changed.push(structuredClone(message))
+    }
+    if (changed.length) await this.#persist()
+    return changed
+  }
+
   async updateConversation(id: string, patch: Partial<Conversation>): Promise<Conversation> {
     const conversation = this.getConversation(id)
     if (!conversation) throw new Error('会话不存在')
