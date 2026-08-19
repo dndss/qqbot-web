@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#eef3f8" />
     <title>QQ Bot 消息工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=9" />
+    <link rel="stylesheet" href="/styles.css?v=11" />
   </head>
   <body>
     <main class="app-shell">
@@ -65,10 +65,83 @@
               </div>
               <button id="cancel-reply" class="icon-button" type="button" aria-label="取消回复">×</button>
             </div>
-            <textarea id="message-input" rows="1" maxlength="2000" placeholder="输入 Markdown 消息，Enter 发送，Shift + Enter 换行"></textarea>
+            <div class="composer-toolbar" aria-label="消息工具栏">
+              <select id="message-type" class="visually-hidden" aria-label="消息类型">
+                <option value="text">普通消息</option>
+                <option value="markdown">Markdown</option>
+                <option value="image">图片</option>
+                <option value="video">视频</option>
+                <option value="audio">语音</option>
+                <option value="file">文件</option>
+              </select>
+              <div class="media-tool" data-media-type="image">
+                <button class="media-tool-main" type="button" data-media-action="local" data-media-type="image" aria-label="上传本地图片" title="上传本地图片">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="4" width="18" height="16" rx="3"/><circle cx="9" cy="10" r="2"/><path d="m5 18 5-5 3 3 2-2 4 4"/></svg>
+                </button>
+                <button class="media-tool-more" type="button" data-media-action="url" data-media-type="image" aria-label="通过 URL 发送图片" title="通过 URL 发送图片">
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
+                </button>
+              </div>
+              <div class="media-tool" data-media-type="video">
+                <button class="media-tool-main" type="button" data-media-action="local" data-media-type="video" aria-label="上传本地视频" title="上传本地视频">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="3" y="5" width="18" height="14" rx="3"/><path d="m10 9 5 3-5 3Z"/></svg>
+                </button>
+                <button class="media-tool-more" type="button" data-media-action="url" data-media-type="video" aria-label="通过 URL 发送视频" title="通过 URL 发送视频">
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
+                </button>
+              </div>
+              <div class="media-tool" data-media-type="audio">
+                <button class="media-tool-main" type="button" data-media-action="local" data-media-type="audio" aria-label="上传本地语音" title="上传本地语音">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><rect x="8" y="3" width="8" height="12" rx="4"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3M9 21h6"/></svg>
+                </button>
+                <button class="media-tool-more" type="button" data-media-action="url" data-media-type="audio" aria-label="通过 URL 发送语音" title="通过 URL 发送语音">
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
+                </button>
+              </div>
+              <div class="media-tool" data-media-type="file">
+                <button class="media-tool-main" type="button" data-media-action="local" data-media-type="file" aria-label="上传本地文件" title="上传本地文件">
+                  <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 7a3 3 0 0 1 3-3h4l2 3h6a3 3 0 0 1 3 3v7a3 3 0 0 1-3 3H6a3 3 0 0 1-3-3Z"/></svg>
+                </button>
+                <button class="media-tool-more" type="button" data-media-action="url" data-media-type="file" aria-label="通过 URL 发送文件" title="通过 URL 发送文件">
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
+                </button>
+              </div>
+              <span id="composer-mode-badge" class="composer-mode-badge">普通消息</span>
+            </div>
+            <textarea id="message-input" rows="1" maxlength="2000" placeholder="输入普通消息，Enter 发送，Shift + Enter 换行"></textarea>
+            <div id="media-inputs" class="media-inputs hidden">
+              <div id="media-url-row" class="media-url-row hidden">
+                <span id="media-url-label">图片 URL</span>
+                <input id="media-url" type="url" maxlength="2000" placeholder="输入公网 HTTPS/HTTP 地址">
+                <button id="cancel-media-url" class="attachment-remove" type="button" aria-label="取消 URL 附件">×</button>
+              </div>
+              <div id="attachment-chip" class="attachment-chip hidden">
+                <span id="attachment-icon" class="attachment-icon">▣</span>
+                <div>
+                  <strong id="media-file-name">未选择文件</strong>
+                  <small id="attachment-meta"></small>
+                </div>
+                <button id="cancel-attachment" class="attachment-remove" type="button" aria-label="移除附件">×</button>
+              </div>
+              <input id="media-file" class="visually-hidden" type="file">
+            </div>
             <div class="composer-footer">
-              <span id="composer-hint">官方协议的主动消息能力可能受限</span>
-              <button id="send-button" class="primary-button" type="submit">发送</button>
+              <span id="composer-hint">普通消息支持纯文本或文本 + 一张图片</span>
+              <div class="send-control">
+                <button id="send-button" class="send-main" type="submit">发送</button>
+                <button id="send-options-button" class="send-more" type="button" aria-label="发送设置" aria-expanded="false">
+                  <svg viewBox="0 0 12 12" aria-hidden="true"><path d="m3 4.5 3 3 3-3"/></svg>
+                </button>
+                <div id="send-options-menu" class="send-options-menu hidden" role="menu">
+                  <span class="send-menu-heading">消息格式</span>
+                  <button type="button" data-message-format="text"><span>普通消息</span><i>✓</i></button>
+                  <button type="button" data-message-format="markdown"><span>Markdown</span><i>✓</i></button>
+                  <span class="send-menu-separator"></span>
+                  <span class="send-menu-heading">快捷键</span>
+                  <button type="button" data-send-shortcut="enter"><span>Enter 发送</span><i>✓</i></button>
+                  <button type="button" data-send-shortcut="ctrl-enter"><span>Ctrl+Enter 发送</span><i>✓</i></button>
+                </div>
+              </div>
             </div>
           </form>
         </div>
@@ -129,6 +202,6 @@
 
     <div id="context-menu" class="context-menu hidden" role="menu"></div>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="/app.js?v=8"></script>
+    <script type="module" src="/app.js?v=11"></script>
   </body>
 </html>

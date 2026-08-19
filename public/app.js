@@ -7,6 +7,10 @@ const state = {
   query: '',
   replyTarget: null,
   mentions: [],
+  composerFormat: 'text',
+  pendingMediaType: null,
+  pendingMediaSource: null,
+  sendShortcut: localStorage.getItem('qqbot-send-shortcut') === 'ctrl-enter' ? 'ctrl-enter' : 'enter',
 }
 
 const elements = Object.fromEntries(
@@ -35,6 +39,15 @@ const messageBadgeLabels = {
   owner: '群主',
   admin: '管理员',
 }
+
+const mediaTypeRules = {
+  image: { label: '图片', accept: '.png,.jpg', extensions: ['png', 'jpg'], softLimitMb: 20 },
+  video: { label: '视频', accept: '.mp4', extensions: ['mp4'], softLimitMb: 30 },
+  audio: { label: '语音', accept: '.silk', extensions: ['silk'], softLimitMb: 20 },
+  file: { label: '文件', accept: '', extensions: null, softLimitMb: 200 },
+}
+
+const mediaHardLimitBytes = 200 * 1024 * 1024
 
 async function api(path, options = {}) {
   const response = await fetch(path, {
@@ -320,14 +333,132 @@ function renderReplyPreview() {
   elements.replyPreviewContent.textContent = target.content
 }
 
+function closeSendOptions() {
+  elements.sendOptionsMenu.classList.add('hidden')
+  elements.sendOptionsButton.setAttribute('aria-expanded', 'false')
+}
+
+function clearAttachmentFields() {
+  state.pendingMediaType = null
+  state.pendingMediaSource = null
+  elements.mediaUrl.value = ''
+  elements.mediaFile.value = ''
+  elements.mediaFileName.textContent = '未选择文件'
+  elements.attachmentMeta.textContent = ''
+}
+
+function clearAttachment() {
+  clearAttachmentFields()
+  updateComposerMode()
+}
+
+function effectiveMessageType() {
+  if (!state.pendingMediaType) return state.composerFormat
+  if (state.pendingMediaType === 'image' && state.composerFormat === 'text') return 'text'
+  return state.pendingMediaType
+}
+
+function renderSendOptions(mentionLocked) {
+  for (const button of elements.sendOptionsMenu.querySelectorAll('[data-message-format]')) {
+    const format = button.dataset.messageFormat
+    button.classList.toggle('selected', format === state.composerFormat)
+    button.disabled = mentionLocked && format !== 'markdown'
+  }
+  for (const button of elements.sendOptionsMenu.querySelectorAll('[data-send-shortcut]')) {
+    button.classList.toggle('selected', button.dataset.sendShortcut === state.sendShortcut)
+  }
+}
+
 function resetComposer(clearText = false) {
   state.replyTarget = null
   state.mentions = []
   if (clearText) {
     elements.messageInput.value = ''
     elements.messageInput.style.height = 'auto'
+    clearAttachmentFields()
   }
   renderReplyPreview()
+  closeSendOptions()
+  updateComposerMode()
+}
+
+function updateComposerMode() {
+  const activeMentions = state.mentions.filter((mention) => elements.messageInput.value.includes(mention.token))
+  state.mentions = activeMentions
+  const mentionLocked = activeMentions.length > 0
+  if (mentionLocked) state.composerFormat = 'markdown'
+  const type = effectiveMessageType()
+  elements.messageType.value = type
+  elements.messageType.disabled = mentionLocked
+  const textWithImage = state.pendingMediaType === 'image' && state.composerFormat === 'text'
+  const showTextInput = !state.pendingMediaType || textWithImage
+  elements.messageInput.classList.toggle('hidden', !showTextInput)
+  elements.mediaInputs.classList.toggle('hidden', !state.pendingMediaType)
+  elements.mediaUrlRow.classList.toggle('hidden', state.pendingMediaSource !== 'url')
+  elements.attachmentChip.classList.toggle('hidden', state.pendingMediaSource !== 'local' || !elements.mediaFile.files[0])
+  elements.composerModeBadge.textContent = state.composerFormat === 'markdown' ? 'Markdown' : '普通消息'
+  elements.composerModeBadge.classList.toggle('locked', mentionLocked)
+  for (const tool of document.querySelectorAll('.media-tool')) {
+    tool.classList.toggle('active', tool.dataset.mediaType === state.pendingMediaType)
+    for (const button of tool.querySelectorAll('button')) button.disabled = mentionLocked
+  }
+  renderSendOptions(mentionLocked)
+  const shortcutLabel = state.sendShortcut === 'enter' ? 'Enter' : 'Ctrl+Enter'
+
+  if (!state.pendingMediaType && state.composerFormat === 'markdown') {
+    elements.messageInput.placeholder = `输入 Markdown 消息，${shortcutLabel} 发送`
+    elements.composerHint.textContent = `Markdown · ${shortcutLabel} 发送`
+    return
+  }
+  if (!state.pendingMediaType) {
+    elements.messageInput.placeholder = `输入普通消息，可附带一张图片，${shortcutLabel} 发送`
+    elements.composerHint.textContent = `普通消息 · ${shortcutLabel} 发送`
+    return
+  }
+  const rule = mediaTypeRules[state.pendingMediaType]
+  elements.mediaFile.accept = rule.accept
+  elements.mediaUrlLabel.textContent = `${rule.label} URL`
+  if (textWithImage) {
+    elements.messageInput.placeholder = '输入普通消息，可附带一张图片'
+    elements.composerHint.textContent = `普通图文 · 图片软限制 ${rule.softLimitMb} MB`
+  } else {
+    elements.composerHint.textContent = `${rule.label}软限制 ${rule.softLimitMb} MB，硬限制 200 MB`
+  }
+}
+
+function validateSelectedFile(file, warnSoft = false) {
+  const type = state.pendingMediaType
+  const rule = mediaTypeRules[type]
+  if (!rule) throw new Error('请选择媒体消息类型')
+  const extension = file.name.split('.').pop()?.toLowerCase() || ''
+  if (rule.extensions && !rule.extensions.includes(extension)) {
+    throw new Error(`${rule.label}仅支持 ${rule.extensions.join(' / ')} 格式`)
+  }
+  if (file.size > mediaHardLimitBytes) throw new Error('文件超过 200 MB 硬限制')
+  const softLimitBytes = rule.softLimitMb * 1024 * 1024
+  if (warnSoft && file.size > softLimitBytes) {
+    return window.confirm(`${rule.label}大小超过官方 ${rule.softLimitMb} MB 软限制，仍要选择吗？`)
+  }
+  return true
+}
+
+function beginMediaSelection(type, source) {
+  clearAttachmentFields()
+  state.pendingMediaType = type
+  state.pendingMediaSource = source
+  updateComposerMode()
+  if (source === 'url') {
+    elements.mediaUrl.focus()
+    return
+  }
+  elements.mediaFile.click()
+  window.addEventListener('focus', () => {
+    setTimeout(() => {
+      if (state.pendingMediaType === type && state.pendingMediaSource === 'local' && !elements.mediaFile.files[0]) {
+        clearAttachment()
+      }
+    }, 250)
+  }, { once: true })
 }
 
 function selectReplyTarget(message, quote) {
@@ -360,6 +491,11 @@ function insertMention(message) {
   if (before.length + inserted.length + after.length > input.maxLength) throw new Error('输入内容已达到长度限制')
   input.value = `${before}${inserted}${after}`
   state.mentions.push({ messageId: message.id, token })
+  if (state.pendingMediaType) {
+    clearAttachmentFields()
+    showToast('已切换为 Markdown；本地图片请改用 Markdown 图片 URL')
+  }
+  state.composerFormat = 'markdown'
   const cursor = before.length + inserted.length
   input.focus()
   input.setSelectionRange(cursor, cursor)
@@ -827,15 +963,88 @@ elements.searchInput.addEventListener('input', () => {
 })
 
 elements.messageInput.addEventListener('keydown', (event) => {
-  if (event.key === 'Enter' && !event.shiftKey) {
+  if (event.isComposing || event.key !== 'Enter') return
+  const shouldSend = state.sendShortcut === 'enter'
+    ? !event.shiftKey
+    : event.ctrlKey || event.metaKey
+  if (shouldSend) {
     event.preventDefault()
     elements.composer.requestSubmit()
+  }
+})
+
+for (const button of document.querySelectorAll('[data-media-action]')) {
+  button.addEventListener('click', () => {
+    beginMediaSelection(button.dataset.mediaType, button.dataset.mediaAction)
+  })
+}
+
+elements.cancelAttachment.addEventListener('click', clearAttachment)
+elements.cancelMediaUrl.addEventListener('click', clearAttachment)
+
+elements.sendOptionsButton.addEventListener('click', () => {
+  const opening = elements.sendOptionsMenu.classList.contains('hidden')
+  elements.sendOptionsMenu.classList.toggle('hidden', !opening)
+  elements.sendOptionsButton.setAttribute('aria-expanded', String(opening))
+})
+
+for (const button of elements.sendOptionsMenu.querySelectorAll('[data-message-format]')) {
+  button.addEventListener('click', () => {
+    if (button.disabled) return
+    state.composerFormat = button.dataset.messageFormat
+    closeSendOptions()
+    updateComposerMode()
+    if (!elements.messageInput.classList.contains('hidden')) elements.messageInput.focus()
+  })
+}
+
+for (const button of elements.sendOptionsMenu.querySelectorAll('[data-send-shortcut]')) {
+  button.addEventListener('click', () => {
+    state.sendShortcut = button.dataset.sendShortcut
+    localStorage.setItem('qqbot-send-shortcut', state.sendShortcut)
+    closeSendOptions()
+    updateComposerMode()
+  })
+}
+
+elements.mediaUrl.addEventListener('input', () => {
+  const value = elements.mediaUrl.value.trim()
+  elements.attachmentMeta.textContent = value
+})
+
+elements.mediaFile.addEventListener('change', () => {
+  const file = elements.mediaFile.files[0]
+  if (!file) {
+    clearAttachment()
+    return
+  }
+  try {
+    if (!validateSelectedFile(file, true)) {
+      elements.mediaFile.value = ''
+      elements.mediaFileName.textContent = '未选择文件'
+      clearAttachment()
+      return
+    }
+    elements.mediaFileName.textContent = `${file.name} · ${(file.size / 1024 / 1024).toFixed(1)} MB`
+    elements.attachmentMeta.textContent = `${mediaTypeRules[state.pendingMediaType].label} · 本地文件`
+    elements.attachmentIcon.textContent = state.pendingMediaType === 'image'
+      ? '▣'
+      : state.pendingMediaType === 'video'
+        ? '▶'
+        : state.pendingMediaType === 'audio'
+          ? '♪'
+          : '▤'
+    updateComposerMode()
+  } catch (error) {
+    clearAttachment()
+    showToast(error.message, true)
   }
 })
 
 elements.messageInput.addEventListener('input', () => {
   elements.messageInput.style.height = 'auto'
   elements.messageInput.style.height = `${Math.min(elements.messageInput.scrollHeight, 140)}px`
+  updateComposerMode()
 })
 
 elements.cancelReply.addEventListener('click', () => {
@@ -846,29 +1055,81 @@ elements.cancelReply.addEventListener('click', () => {
 
 document.addEventListener('pointerdown', (event) => {
   if (!elements.contextMenu.contains(event.target)) closeContextMenu()
+  if (!elements.sendOptionsMenu.contains(event.target) && !elements.sendOptionsButton.contains(event.target)) closeSendOptions()
 })
 document.addEventListener('keydown', (event) => {
-  if (event.key === 'Escape') closeContextMenu()
+  if (event.key === 'Escape') {
+    closeContextMenu()
+    closeSendOptions()
+  }
 })
 window.addEventListener('resize', closeContextMenu)
 elements.messageList.addEventListener('scroll', closeContextMenu, { passive: true })
 
 elements.composer.addEventListener('submit', async (event) => {
   event.preventDefault()
+  if (!state.selectedId) return
+  const type = elements.messageType.value
   const content = elements.messageInput.value.trim()
-  if (!content || !state.selectedId) return
+  const mediaUrl = elements.mediaUrl.value.trim()
+  const mediaFile = elements.mediaFile.files[0]
   elements.sendButton.disabled = true
   try {
-    const message = await api(`/api/conversations/${encodeURIComponent(state.selectedId)}/messages`, {
-      method: 'POST',
-      body: JSON.stringify({
-        content,
-        ...(state.replyTarget ? {
-          reply: { messageId: state.replyTarget.messageId, quote: state.replyTarget.quote },
-        } : {}),
-        mentions: state.mentions.filter((mention) => content.includes(mention.token)),
-      }),
-    })
+    let message
+    const endpoint = `/api/conversations/${encodeURIComponent(state.selectedId)}/messages`
+    if (type === 'markdown') {
+      if (!content) throw new Error('消息内容不能为空')
+      message = await api(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          type,
+          content,
+          ...(state.replyTarget ? {
+            reply: { messageId: state.replyTarget.messageId, quote: state.replyTarget.quote },
+          } : {}),
+          mentions: state.mentions.filter((mention) => content.includes(mention.token)),
+        }),
+      })
+    } else if (mediaFile) {
+      if (mediaUrl) throw new Error('本地文件和公网 URL 只能选择一种')
+      validateSelectedFile(mediaFile)
+      const params = new URLSearchParams({ type, filename: mediaFile.name })
+      if (type === 'text' && content) params.set('content', content)
+      if (state.replyTarget) {
+        params.set('replyMessageId', state.replyTarget.messageId)
+        params.set('quote', String(state.replyTarget.quote))
+      }
+      message = await api(`${endpoint}?${params}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/octet-stream' },
+        body: mediaFile,
+      })
+    } else if (type === 'text') {
+      if (!content && !mediaUrl) throw new Error('请输入消息内容或选择图片')
+      message = await api(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          type,
+          content,
+          ...(mediaUrl ? { imageUrl: mediaUrl } : {}),
+          ...(state.replyTarget ? {
+            reply: { messageId: state.replyTarget.messageId, quote: state.replyTarget.quote },
+          } : {}),
+        }),
+      })
+    } else {
+      if (!mediaUrl) throw new Error('请选择本地文件或填写公网 URL')
+      message = await api(endpoint, {
+        method: 'POST',
+        body: JSON.stringify({
+          type,
+          content: mediaUrl,
+          ...(state.replyTarget ? {
+            reply: { messageId: state.replyTarget.messageId, quote: state.replyTarget.quote },
+          } : {}),
+        }),
+      })
+    }
     resetComposer(true)
     if (!state.messages.some((item) => item.id === message.id)) state.messages.push(message)
     await loadConversations()
@@ -929,3 +1190,5 @@ Promise.all([api('/api/status'), api('/api/accounts'), api('/api/conversations')
     renderSelectedConversation()
   })
   .catch((error) => showToast(error.message, true))
+
+updateComposerMode()

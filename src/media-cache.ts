@@ -1,10 +1,12 @@
 import { createHash, randomUUID } from 'node:crypto'
 import { lookup } from 'node:dns/promises'
-import { access, mkdir, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
+import { createReadStream } from 'node:fs'
+import { access, mkdir, open, readdir, rename, stat, unlink, writeFile } from 'node:fs/promises'
 import { isIP } from 'node:net'
 import { join } from 'node:path'
 
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
+const MAX_LOCAL_IMAGE_BYTES = 200 * 1024 * 1024
 const MAX_ACCOUNT_CACHE_BYTES = 1024 * 1024 * 1024
 const DOWNLOAD_TIMEOUT_MS = 15_000
 const imageExtensions = ['.jpg', '.png', '.gif', '.webp'] as const
@@ -96,6 +98,59 @@ export class MediaCache {
     const request = this.#cacheImage(accountId, url).finally(() => this.#pending.delete(key))
     this.#pending.set(key, request)
     return request
+  }
+
+  async storeLocalImage(accountId: string, sourcePath: string): Promise<string | undefined> {
+    if (!validAccountId(accountId)) return undefined
+    let temporaryPath = ''
+    try {
+      const details = await stat(sourcePath)
+      if (!details.isFile() || details.size === 0 || details.size > MAX_LOCAL_IMAGE_BYTES) return undefined
+
+      const header = Buffer.alloc(12)
+      const handle = await open(sourcePath, 'r')
+      let bytesRead = 0
+      try {
+        ({ bytesRead } = await handle.read(header, 0, header.length, 0))
+      } finally {
+        await handle.close()
+      }
+      const extension = imageExtension(header.subarray(0, bytesRead))
+      if (!extension || !['.jpg', '.png'].includes(extension)) return undefined
+
+      const hash = createHash('sha256')
+      for await (const chunk of createReadStream(sourcePath)) hash.update(chunk)
+      const directory = join(this.dataDirectory, 'bots', accountId, 'media')
+      const filename = `${hash.digest('hex')}${extension}`
+      const path = join(directory, filename)
+      await mkdir(directory, { recursive: true })
+      try {
+        await access(path)
+        return this.#localUrl(accountId, filename)
+      } catch {
+        // 缓存中不存在相同内容，继续移动本地上传文件。
+      }
+
+      temporaryPath = `${path}.${randomUUID()}.tmp`
+      await rename(sourcePath, temporaryPath)
+      try {
+        await rename(temporaryPath, path)
+        temporaryPath = ''
+      } catch (error) {
+        try {
+          await access(path)
+          await unlink(temporaryPath).catch(() => undefined)
+          temporaryPath = ''
+        } catch {
+          throw error
+        }
+      }
+      await this.#trimCache(directory).catch(() => undefined)
+      return this.#localUrl(accountId, filename)
+    } catch {
+      if (temporaryPath) await rename(temporaryPath, sourcePath).catch(() => undefined)
+      return undefined
+    }
   }
 
   mediaPath(accountId: string, filename: string): string | undefined {

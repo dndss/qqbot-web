@@ -1,5 +1,5 @@
 import { createServer, type IncomingMessage, type ServerResponse } from 'node:http'
-import { readFile } from 'node:fs/promises'
+import { mkdir, open, readFile, unlink } from 'node:fs/promises'
 import { extname, join, normalize } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
@@ -450,9 +450,90 @@ async function disconnectBot(): Promise<void> {
 }
 
 interface SendMessageInput {
+  type: 'text' | 'markdown' | 'image' | 'video' | 'audio' | 'file'
   content: string
+  media?: {
+    type: 'image' | 'video' | 'audio' | 'file'
+    source: string
+    name?: string
+    local?: boolean
+  }
   reply?: { messageId: string; quote: boolean }
   mentions?: Array<{ messageId: string; token: string }>
+}
+
+type MediaMessageType = NonNullable<SendMessageInput['media']>['type']
+
+const mediaUploadLimits: Record<MediaMessageType, { label: string; extensions?: string[]; hardLimit: number }> = {
+  image: { label: '图片', extensions: ['.png', '.jpg'], hardLimit: 200 * 1024 * 1024 },
+  video: { label: '视频', extensions: ['.mp4'], hardLimit: 200 * 1024 * 1024 },
+  audio: { label: '语音', extensions: ['.silk'], hardLimit: 200 * 1024 * 1024 },
+  file: { label: '文件', hardLimit: 200 * 1024 * 1024 },
+}
+
+function isMediaMessageType(value: string): value is MediaMessageType {
+  return ['image', 'video', 'audio', 'file'].includes(value)
+}
+
+function safeUploadName(value: string): string {
+  return value.split(/[/\\]/).pop()?.replace(/[\u0000-\u001f]/g, '').trim().slice(0, 255) || 'file'
+}
+
+function validateMediaName(type: MediaMessageType, name: string): void {
+  const allowed = mediaUploadLimits[type].extensions
+  if (!allowed) return
+  const extension = extname(name).toLowerCase()
+  if (!allowed.includes(extension)) {
+    throw new Error(`${mediaUploadLimits[type].label}仅支持 ${allowed.join(' / ')} 格式`)
+  }
+}
+
+function validateMediaUrl(type: MediaMessageType, value: string): string {
+  let parsed: URL
+  try {
+    parsed = new URL(value)
+  } catch {
+    throw new Error('媒体 URL 格式无效')
+  }
+  if (!['http:', 'https:'].includes(parsed.protocol)) throw new Error('媒体 URL 仅支持 HTTP 或 HTTPS')
+  validateMediaName(type, decodeURIComponent(parsed.pathname))
+  return parsed.href
+}
+
+async function receiveMediaUpload(request: IncomingMessage, type: MediaMessageType, originalName: string): Promise<string> {
+  const { hardLimit } = mediaUploadLimits[type]
+  const declaredSize = Number(request.headers['content-length'] ?? 0)
+  if (Number.isFinite(declaredSize) && declaredSize > hardLimit) throw new Error('文件超过 200 MB 硬限制')
+
+  const temporaryDirectory = join(dataDirectory, 'tmp')
+  await mkdir(temporaryDirectory, { recursive: true })
+  const temporaryPath = join(temporaryDirectory, `${randomUUID()}${extname(originalName).toLowerCase()}`)
+  const handle = await open(temporaryPath, 'wx')
+  let size = 0
+  try {
+    for await (const chunk of request) {
+      const buffer = Buffer.from(chunk)
+      size += buffer.length
+      if (size > hardLimit) {
+        request.resume()
+        throw new Error('文件超过 200 MB 硬限制')
+      }
+      let offset = 0
+      while (offset < buffer.length) {
+        const { bytesWritten } = await handle.write(buffer, offset)
+        if (bytesWritten === 0) throw new Error('写入临时文件失败')
+        offset += bytesWritten
+      }
+    }
+    if (size === 0) throw new Error('上传文件不能为空')
+    return temporaryPath
+  } catch (error) {
+    await handle.close().catch(() => undefined)
+    await unlink(temporaryPath).catch(() => undefined)
+    throw error
+  } finally {
+    await handle.close().catch(() => undefined)
+  }
 }
 
 function markdownContent(conversation: Conversation, input: SendMessageInput): string {
@@ -478,7 +559,15 @@ async function sendMessage(conversation: Conversation, input: SendMessageInput):
   if (input.reply && !replyTarget) throw new Error('回复的消息不存在')
   if (input.reply?.quote && !replyTarget?.msgIdx) throw new Error('该消息没有引用索引，无法引用回复')
   const source = replyTarget ? { id: replyTarget.id, msg_idx: replyTarget.msgIdx } : undefined
-  const sendable = segment.markdown(markdownContent(conversation, input))
+  const sendable = input.type === 'markdown'
+    ? segment.markdown(markdownContent(conversation, input))
+    : [
+        ...(input.content ? [segment.text(input.content)] : []),
+        ...(input.media ? [segment[input.media.type](
+          input.media.source,
+          input.media.name ? { name: input.media.name } : undefined,
+        )] : []),
+      ]
   let result: { id?: string; timestamp?: number; ext_info?: { ref_idx?: string } }
   switch (conversation.type) {
     case 'private':
@@ -489,14 +578,31 @@ async function sendMessage(conversation: Conversation, input: SendMessageInput):
       break
   }
 
+  const accountId = store.getActiveAccount()?.id
+  const localUrl = input.media?.type === 'image' && input.media.local && accountId
+    ? await mediaCache.storeLocalImage(accountId, input.media.source)
+    : undefined
+  const mediaLabel = input.media
+    ? `[${mediaUploadLimits[input.media.type].label}${input.media.name ? `：${input.media.name}` : ''}]`
+    : ''
+  const parts: MessagePart[] = [
+    ...(input.content ? [{ type: 'text' as const, text: input.content }] : []),
+    ...(input.media ? [{
+      type: input.media.type,
+      ...(input.media.source.startsWith('http') ? { url: input.media.source } : {}),
+      ...(localUrl ? { localUrl } : {}),
+      ...(input.media.name ? { name: input.media.name } : {}),
+    } as MessagePart] : []),
+  ]
+
   const message: StoredMessage = {
     id: result.id || randomUUID(),
     conversationId: conversation.id,
     direction: 'outgoing',
     senderId: bot.self_id || 'bot',
     senderName: '机器人',
-    content: input.content,
-    parts: [{ type: 'text', text: input.content }],
+    content: [input.content, mediaLabel].filter(Boolean).join(' ').trim(),
+    parts,
     ...(result.ext_info?.ref_idx ? { msgIdx: result.ext_info.ref_idx } : {}),
     ...(input.reply?.quote && replyTarget?.msgIdx ? { refMsgIdx: replyTarget.msgIdx } : {}),
     timestamp: result.timestamp ? result.timestamp * 1000 : Date.now(),
@@ -704,9 +810,35 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       return true
     }
     if (action === 'messages' && request.method === 'POST') {
+      const requestedType = String(url.searchParams.get('type') ?? '')
+      const contentType = String(request.headers['content-type'] ?? '')
+      const uploadedMediaType = requestedType === 'text' ? 'image' : requestedType
+      if (isMediaMessageType(uploadedMediaType) && !contentType.includes('application/json')) {
+        const name = safeUploadName(String(url.searchParams.get('filename') ?? ''))
+        validateMediaName(uploadedMediaType, name)
+        const content = requestedType === 'text' ? String(url.searchParams.get('content') ?? '').trim() : ''
+        if (content.length > 2000) throw new Error('消息不能超过 2000 个字符')
+        const replyMessageId = String(url.searchParams.get('replyMessageId') ?? '').trim()
+        const temporaryPath = await receiveMediaUpload(request, uploadedMediaType, name)
+        try {
+          sendJson(response, 201, await sendMessage(conversation, {
+            type: requestedType as SendMessageInput['type'],
+            content,
+            media: { type: uploadedMediaType, source: temporaryPath, name, local: true },
+            ...(replyMessageId ? {
+              reply: { messageId: replyMessageId, quote: url.searchParams.get('quote') === 'true' },
+            } : {}),
+          }))
+        } finally {
+          await unlink(temporaryPath).catch(() => undefined)
+        }
+        return true
+      }
+
       const payload = await readJson(request)
+      const messageType = String(payload.type ?? 'markdown')
+      if (!['text', 'markdown'].includes(messageType) && !isMediaMessageType(messageType)) throw new Error('不支持的消息类型')
       const content = String(payload.content ?? '').trim()
-      if (!content) throw new Error('消息内容不能为空')
       if (content.length > 2000) throw new Error('消息不能超过 2000 个字符')
       const replyValue = payload.reply
       const replyRecord = replyValue && typeof replyValue === 'object' && !Array.isArray(replyValue)
@@ -722,10 +854,23 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
           return messageId && token ? [{ messageId, token }] : []
         })
         : []
+      let media: SendMessageInput['media']
+      if (isMediaMessageType(messageType)) {
+        const source = validateMediaUrl(messageType, content)
+        const name = safeUploadName(String(payload.name ?? decodeURIComponent(new URL(source).pathname)))
+        media = { type: messageType, source, name }
+      } else if (messageType === 'text' && String(payload.imageUrl ?? '').trim()) {
+        const source = validateMediaUrl('image', String(payload.imageUrl).trim())
+        const name = safeUploadName(String(payload.imageName ?? decodeURIComponent(new URL(source).pathname)))
+        media = { type: 'image', source, name }
+      }
+      if (!content && !media) throw new Error('消息内容不能为空')
       sendJson(response, 201, await sendMessage(conversation, {
-        content,
+        type: messageType as SendMessageInput['type'],
+        content: isMediaMessageType(messageType) ? '' : content,
+        ...(media ? { media } : {}),
         ...(replyMessageId ? { reply: { messageId: replyMessageId, quote: replyRecord?.quote === true } } : {}),
-        ...(mentions.length ? { mentions } : {}),
+        ...(messageType === 'markdown' && mentions.length ? { mentions } : {}),
       }))
       return true
     }

@@ -30,7 +30,7 @@ export interface ForwardMessagePart {
 
 export type MessagePart =
   | { type: 'text'; text: string }
-  | { type: 'image'; url: string; localUrl?: string; name?: string }
+  | { type: 'image'; url?: string; localUrl?: string; name?: string }
   | { type: 'face'; id: string; text?: string }
   | { type: 'at'; userId: string; name?: string }
   | { type: 'reply'; messageId: string }
