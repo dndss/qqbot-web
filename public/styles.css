@@ -79,8 +79,11 @@ button { cursor: pointer; }
 .hidden { display: none !important; }
 .chat-view { display: grid; height: 100%; min-height: 0; overflow: hidden; grid-template-rows: auto minmax(0, 1fr) auto; }
 .chat-header { display: flex; min-height: 78px; align-items: center; justify-content: space-between; padding: 15px 24px; border-bottom: 1px solid #e6ebf0; background: rgba(255,255,255,.8); backdrop-filter: blur(15px); }
+.chat-heading { min-width: 0; flex: 1; }
 .chat-header h1 { margin: 0; font-size: 17px; }
 .chat-header p { margin: 5px 0 0; color: #8a96a7; font-size: 12px; }
+.mobile-back-button { display: none; width: 44px; height: 44px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 12px; color: #52657a; background: transparent; }
+.mobile-back-button svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .type-badge { padding: 5px 9px; border-radius: 8px; color: #3775b9; background: #e7f2ff; font-size: 11px; }
 .message-list { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 22px 26px; scroll-behavior: smooth; }
 .date-divider { margin: 8px 0 18px; color: #a0a9b5; text-align: center; font-size: 11px; }
@@ -91,6 +94,7 @@ button { cursor: pointer; }
 .message-stack { display: flex; min-width: 0; max-width: min(70%, 620px); flex-direction: column; gap: 5px; }
 .message-row.outgoing .message-stack { align-items: flex-end; }
 .message-meta { display: flex; align-items: center; gap: 5px; color: #9ba5b2; font-size: 10px; }
+.message-more-button { display: none; width: 44px; height: 44px; flex: none; place-items: center; margin: -14px -10px -14px 0; padding: 0; border: 0; border-radius: 10px; color: #708095; background: transparent; font-size: 20px; line-height: 1; }
 .message-sender { color: #7f8c9d; }
 .sender-badge { padding: 2px 5px; border: 1px solid transparent; border-radius: 5px; font-size: 9px; font-weight: 700; line-height: 1; letter-spacing: .02em; }
 .sender-badge.bot { border-color: rgba(37, 142, 242, .2); color: #1875d1; background: rgba(37, 142, 242, .1); }
@@ -231,15 +235,40 @@ dialog::backdrop { background: rgba(20,33,49,.42); backdrop-filter: blur(3px); }
 
 @media (max-width: 760px) {
   .app-shell { display: block; }
-  .sidebar, .chat-panel { width: 100%; height: 100vh; }
+  .sidebar, .chat-panel { width: 100%; height: 100dvh; }
   .chat-panel { display: none; }
   body.mobile-chat-open .sidebar { display: none; }
   body.mobile-chat-open .chat-panel { display: block; }
+  .brand { padding-top: calc(16px + env(safe-area-inset-top)); }
+  .brand .icon-button, .account-toolbar .icon-button { width: 44px; height: 44px; }
+  .account-toolbar select, .search-wrap input { min-height: 44px; }
+  .connection-card .small-button { min-width: 56px; min-height: 44px; }
+  .chat-header { min-height: calc(68px + env(safe-area-inset-top)); padding: calc(10px + env(safe-area-inset-top)) 12px 10px 6px; gap: 4px; }
+  .chat-header h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .mobile-back-button { display: grid; }
+  .type-badge { flex: none; }
+  .message-list { padding: 16px 14px; }
   .message-stack { max-width: 82%; }
-  .composer { padding: 8px 12px 10px; }
+  .message-more-button { display: grid; }
+  .message-row.outgoing .message-more-button { margin-right: 0; margin-left: -10px; }
+  .composer { padding: 8px 12px calc(10px + env(safe-area-inset-bottom)); }
   .composer-toolbar { gap: 3px; }
-  .media-tool-main { width: 31px; }
-  .media-tool-more { width: 17px; }
+  .media-tool, .media-tool button { height: 44px; }
+  .media-tool-main { width: 40px; }
+  .media-tool-more { width: 24px; }
   .composer-mode-badge { display: none; }
+  .composer-footer { min-height: 44px; }
+  .send-control, .send-control > button { height: 44px; }
+  .send-main { min-width: 78px; }
+  .send-more { width: 44px; }
   .send-options-menu { width: 200px; }
+  .send-options-menu > button, .context-menu button { min-height: 44px; }
+  .context-menu { max-height: min(70dvh, 520px); overflow-y: auto; }
+  .reply-preview .icon-button, .attachment-remove { width: 44px; height: 44px; }
+  dialog { max-height: calc(100dvh - 24px); }
+  .settings-form { max-height: calc(100dvh - 24px); overflow-y: auto; padding: 20px; }
+  .settings-form input:not([type="checkbox"]), .dialog-actions button { min-height: 44px; }
+  .checkbox-label { min-height: 44px; }
+  .checkbox-label input { width: 20px; height: 20px; }
+  .toast.visible { bottom: calc(18px + env(safe-area-inset-bottom)); }
 }

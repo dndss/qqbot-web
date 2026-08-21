@@ -291,7 +291,7 @@ function closeContextMenu() {
   elements.contextMenu.replaceChildren()
 }
 
-function showContextMenu(event, actions) {
+function showContextMenu(event, actions, anchor) {
   event.preventDefault()
   event.stopPropagation()
   elements.contextMenu.replaceChildren()
@@ -318,8 +318,11 @@ function showContextMenu(event, actions) {
   }
   elements.contextMenu.classList.remove('hidden')
   const rect = elements.contextMenu.getBoundingClientRect()
-  elements.contextMenu.style.left = `${Math.max(6, Math.min(event.clientX, window.innerWidth - rect.width - 6))}px`
-  elements.contextMenu.style.top = `${Math.max(6, Math.min(event.clientY, window.innerHeight - rect.height - 6))}px`
+  const anchorRect = anchor?.getBoundingClientRect()
+  const targetX = anchorRect ? anchorRect.right : event.clientX
+  const targetY = anchorRect ? anchorRect.bottom + 4 : event.clientY
+  elements.contextMenu.style.left = `${Math.max(6, Math.min(targetX, window.innerWidth - rect.width - 6))}px`
+  elements.contextMenu.style.top = `${Math.max(6, Math.min(targetY, window.innerHeight - rect.height - 6))}px`
   elements.contextMenu.querySelector('button')?.focus()
 }
 
@@ -524,7 +527,7 @@ async function muteFromMenu(message, durationMinutes) {
   showToast(result.mutedUntil ? `已禁言至 ${formatDateTime(result.mutedUntil)}` : '已解除禁言')
 }
 
-function openMessageMenu(event, message) {
+function openMessageMenu(event, message, anchor) {
   const actions = []
   const conversation = state.conversations.find((item) => item.id === message.conversationId)
   const targetIsManager = (message.roles || []).some((role) => role === 'owner' || role === 'admin')
@@ -540,7 +543,28 @@ function openMessageMenu(event, message) {
       { label: '不引用回复', run: () => selectReplyTarget(message, false) },
     )
   }
-  if (actions.length) showContextMenu(event, actions)
+  const canManageMember = conversation?.type === 'group' && message.direction === 'incoming' && message.senderOpenid
+  if (canManageMember) {
+    if (actions.length && actions.at(-1) !== null) actions.push(null)
+    actions.push(
+      { label: `@${message.senderName}`, run: () => insertMention(message) },
+      { label: '禁言 10 分钟', run: () => muteFromMenu(message, 10) },
+      { label: '禁言 1 小时', run: () => muteFromMenu(message, 60) },
+      { label: '禁言 1 天', run: () => muteFromMenu(message, 1440) },
+      {
+        label: '自定义禁言…',
+        run: () => {
+          const value = window.prompt('请输入禁言分钟数（1-43200）', '10')
+          if (value === null) return
+          const minutes = Number(value)
+          if (!Number.isInteger(minutes) || minutes < 1 || minutes > 43_200) throw new Error('请输入 1 到 43200 之间的整数')
+          return muteFromMenu(message, minutes)
+        },
+      },
+      { label: '解除禁言', run: () => muteFromMenu(message, 0) },
+    )
+  }
+  if (actions.length) showContextMenu(event, actions, anchor)
 }
 
 function openAvatarMenu(event, message) {
@@ -698,6 +722,13 @@ function renderMessages() {
     const time = document.createElement('time')
     time.textContent = formatTime(message.timestamp)
     meta.append(time)
+    const moreButton = document.createElement('button')
+    moreButton.type = 'button'
+    moreButton.className = 'message-more-button'
+    moreButton.setAttribute('aria-label', `操作 ${message.senderName} 的消息`)
+    moreButton.textContent = '…'
+    moreButton.addEventListener('click', (event) => openMessageMenu(event, message, moreButton))
+    meta.append(moreButton)
     const bubble = document.createElement('div')
     bubble.className = 'message-bubble'
     renderMessageContent(bubble, message)
@@ -794,6 +825,7 @@ async function loadConversations() {
 }
 
 async function selectConversation(id) {
+  const shouldOpenMobileHistory = window.innerWidth < 760 && !document.body.classList.contains('mobile-chat-open')
   if (state.selectedId !== id) resetComposer(true)
   closeContextMenu()
   state.selectedId = id
@@ -803,8 +835,28 @@ async function selectConversation(id) {
   if (conversation) conversation.unread = 0
   renderConversations()
   renderSelectedConversation()
-  if (window.innerWidth < 760) document.body.classList.add('mobile-chat-open')
+  if (window.innerWidth < 760) {
+    document.body.classList.add('mobile-chat-open')
+    if (shouldOpenMobileHistory) history.pushState({ ...history.state, mobileChatOpen: true }, '')
+  }
 }
+
+function closeMobileChat() {
+  document.body.classList.remove('mobile-chat-open')
+  closeContextMenu()
+  closeSendOptions()
+}
+
+elements.mobileBackButton.addEventListener('click', () => {
+  if (history.state?.mobileChatOpen) history.back()
+  else closeMobileChat()
+})
+
+window.addEventListener('popstate', (event) => {
+  document.body.classList.toggle('mobile-chat-open', Boolean(event.state?.mobileChatOpen && state.selectedId))
+  closeContextMenu()
+  closeSendOptions()
+})
 
 function showToast(message, isError = false) {
   elements.toast.textContent = message
@@ -1063,7 +1115,10 @@ document.addEventListener('keydown', (event) => {
     closeSendOptions()
   }
 })
-window.addEventListener('resize', closeContextMenu)
+window.addEventListener('resize', () => {
+  closeContextMenu()
+  if (window.innerWidth >= 760) document.body.classList.remove('mobile-chat-open')
+})
 elements.messageList.addEventListener('scroll', closeContextMenu, { passive: true })
 
 elements.composer.addEventListener('submit', async (event) => {
