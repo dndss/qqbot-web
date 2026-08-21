@@ -3,7 +3,7 @@
 本目录是 Web QQ 项目内置的 `qq-official-bot` SDK，包含源码与已编译的 `lib` 产物，供上层 Web 项目通过本地文件依赖直接使用。
 
 - SDK 上游仓库：<https://github.com/dndss/qq-official-bot>
-- 当前内置版本基于上游提交 `f209afb`。
+- 当前内置版本基于上游 `main` 分支提交 `ac8a82d`。
 - 更新 SDK 时，请从上游同步源码后在本目录执行 `pnpm install` 和 `pnpm run build`，并同时提交源码及重新生成的 `lib` 产物。
 
 以下为 SDK 原始说明。
