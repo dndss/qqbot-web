@@ -182,12 +182,12 @@ export class MessageBuilder {
       this.messagePayload.msg_id = elem.data.id;
       this.messagePayload.msg_seq ??= 1;
       this.brief += `<reply,msg_id=${elem.data.id}>`;
-      if (elem.data.msg_idx) {
-        this.messagePayload.message_reference = {
-          message_id: elem.data.msg_idx
-        };
-        this.brief += `<reference,msg_idx=${elem.data.msg_idx}>`;
-      }
+    }
+    if (elem.data.msg_idx) {
+      this.messagePayload.message_reference = {
+        message_id: elem.data.msg_idx
+      };
+      this.brief += `<reference,msg_idx=${elem.data.msg_idx}>`;
     }
   }
 

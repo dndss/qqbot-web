@@ -27,6 +27,9 @@ export interface SendResult {
 }
 
 const REPLY_SEQUENCE_TTL = 5 * 60 * 1000;
+const REPLY_SEQUENCE_DUPLICATED = 40054005;
+const REPLY_MESSAGE_EXPIRED = 40034005;
+const MAX_REPLY_SEQUENCE = 5;
 
 interface ReplySequenceEntry {
     sequence: number;
@@ -66,6 +69,21 @@ export class MessageService {
         if (!current || current.sequence !== sequence) return;
         if (sequence === 1) this.replySequences.delete(messageId);
         else current.sequence -= 1;
+    }
+
+    private advanceReplySequence(messageId: string, sequence: number): void {
+        const current = this.replySequences.get(messageId);
+        if (current && current.sequence < sequence) current.sequence = sequence;
+    }
+
+    private getOpenApiErrorCode(error: unknown): number | undefined {
+        const value = Number(
+            (error as any)?.err_code ??
+            (error as any)?.code ??
+            (error as any)?.response?.data?.err_code ??
+            (error as any)?.response?.data?.code
+        );
+        return Number.isSafeInteger(value) ? value : undefined;
     }
 
     /**
@@ -177,8 +195,45 @@ export class MessageService {
                 buildResult.messagePayload.media = { file_info: uploaded.file_info };
             }
 
-            // 发送普通消息
-            return await this.sendRegularMessage(endpointPath, buildResult, options);
+            try {
+                // 发送普通消息
+                return await this.sendRegularMessage(endpointPath, buildResult, options);
+            } catch (initialError) {
+                let error = initialError;
+
+                // msg_seq 被腾讯侧占用时，在被动回复允许的 1～5 范围内递增重试。
+                while (
+                    replyMessageId &&
+                    replySequence !== undefined &&
+                    replySequence < MAX_REPLY_SEQUENCE &&
+                    this.getOpenApiErrorCode(error) === REPLY_SEQUENCE_DUPLICATED
+                ) {
+                    replySequence += 1;
+                    this.advanceReplySequence(replyMessageId, replySequence);
+                    buildResult.messagePayload.msg_seq = replySequence;
+                    try {
+                        return await this.sendRegularMessage(endpointPath, buildResult, options);
+                    } catch (retryError) {
+                        error = retryError;
+                    }
+                }
+
+                const isQuotedReply = Boolean(buildResult.messagePayload.message_reference);
+                const isExpiredReply = this.getOpenApiErrorCode(error) === REPLY_MESSAGE_EXPIRED;
+
+                // 引用回复被动发送失败，或 msg_id 已过期时，移除被动回复凭据后转主动发送。
+                // message_reference 会被保留，因此引用回复仍显示原引用。
+                if (replyMessageId && (isQuotedReply || isExpiredReply)) {
+                    if (replySequence !== undefined)
+                        this.releaseReplySequence(replyMessageId, replySequence);
+                    replySequence = undefined;
+                    delete buildResult.messagePayload.msg_id;
+                    delete buildResult.messagePayload.msg_seq;
+                    return await this.sendRegularMessage(endpointPath, buildResult, options);
+                }
+
+                throw error;
+            }
         } catch (error) {
             if (replyMessageId && replySequence !== undefined)
                 this.releaseReplySequence(replyMessageId, replySequence);

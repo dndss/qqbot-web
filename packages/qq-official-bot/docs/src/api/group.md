@@ -84,6 +84,10 @@ await bot.messageService.sendGroupMessage(group_id, [
 成功响应中的 `ext_info.ref_idx` 会原样保留。后续群消息事件引用这条 Bot
 消息时，`message_scene.ext` 中的 `ref_msg_idx` 与该值对应。
 
+被动回复的 `msg_seq` 由 SDK 按真实 `msg_id` 自动顺序分配。遇到
+`40054005` 时会在 `1～5` 内递增重试；遇到 `40034005` 时会移除被动回复
+字段并转为主动消息。引用回复的被动发送失败时也会保留引用并转主动重试。
+
 ### 撤回群消息
 
 撤回指定的群消息。
