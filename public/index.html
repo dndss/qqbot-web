@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#eef3f8" />
     <title>QQ Bot 消息工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=12" />
+    <link rel="stylesheet" href="/styles.css?v=15" />
   </head>
   <body>
     <main class="app-shell">
@@ -57,7 +57,7 @@
               <h1 id="chat-title"></h1>
               <p id="chat-subtitle"></p>
             </div>
-            <span id="chat-type" class="type-badge"></span>
+            <button id="chat-type" class="type-badge" type="button" aria-controls="detail-panel" aria-expanded="false"></button>
           </header>
           <div id="message-list" class="message-list" aria-live="polite"></div>
           <form id="composer" class="composer">
@@ -152,6 +152,9 @@
 
       <aside id="detail-panel" class="detail-panel">
         <div class="detail-heading">
+          <button id="mobile-detail-back" class="mobile-detail-back" type="button" aria-label="返回聊天">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="m15 18-6-6 6-6"/></svg>
+          </button>
           <h2>会话详情</h2>
           <button id="refresh-bot-state" class="small-button hidden" type="button">刷新状态</button>
         </div>
@@ -205,6 +208,6 @@
 
     <div id="context-menu" class="context-menu hidden" role="menu"></div>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="/app.js?v=12"></script>
+    <script type="module" src="/app.js?v=15"></script>
   </body>
 </html>

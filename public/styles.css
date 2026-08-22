@@ -7,7 +7,7 @@
 }
 
 * { box-sizing: border-box; }
-body { margin: 0; min-width: 320px; min-height: 100vh; overflow: hidden; }
+body { margin: 0; min-width: 280px; min-height: 100vh; overflow: hidden; }
 button, input, textarea { font: inherit; }
 button { cursor: pointer; }
 
@@ -84,8 +84,10 @@ button { cursor: pointer; }
 .chat-header p { margin: 5px 0 0; color: #8a96a7; font-size: 12px; }
 .mobile-back-button { display: none; width: 44px; height: 44px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 12px; color: #52657a; background: transparent; }
 .mobile-back-button svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
-.type-badge { padding: 5px 9px; border-radius: 8px; color: #3775b9; background: #e7f2ff; font-size: 11px; }
-.message-list { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 22px 26px; scroll-behavior: smooth; }
+.type-badge { padding: 5px 9px; border: 0; border-radius: 8px; color: #3775b9; background: #e7f2ff; font-size: 11px; }
+.message-list { min-height: 0; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; padding: 22px 26px; }
+.message-history-status { width: fit-content; margin: 0 auto 12px; padding: 5px 10px; border-radius: 10px; color: #8b98a8; background: #edf2f6; font-size: 11px; }
+.message-history-status.loading { color: #2878c4; background: #e7f2fc; }
 .date-divider { margin: 8px 0 18px; color: #a0a9b5; text-align: center; font-size: 11px; }
 .message-row { display: flex; align-items: flex-start; gap: 9px; margin: 13px 0; }
 .message-row.outgoing { flex-direction: row-reverse; }
@@ -193,7 +195,9 @@ button { cursor: pointer; }
 
 .detail-panel { display: flex; align-items: center; overflow-x: hidden; overflow-y: auto; overscroll-behavior: contain; flex-direction: column; padding: 24px 20px; border-left: 1px solid #e6ebf0; background: #fff; }
 .detail-heading { display: flex; width: 100%; align-items: center; justify-content: space-between; margin: 2px 0 28px; }
-.detail-heading h2 { margin: 0; font-size: 15px; }
+.detail-heading h2 { flex: 1; margin: 0; font-size: 15px; }
+.mobile-detail-back { display: none; width: 44px; height: 44px; flex: none; place-items: center; padding: 0; border: 0; border-radius: 12px; color: #52657a; background: transparent; }
+.mobile-detail-back svg { width: 24px; height: 24px; fill: none; stroke: currentColor; stroke-width: 2; stroke-linecap: round; stroke-linejoin: round; }
 .detail-avatar { display: grid; width: 68px; height: 68px; place-items: center; border-radius: 22px; color: white; background: linear-gradient(145deg, #5689c7, #3569a8); font-size: 25px; font-weight: 700; }
 .detail-panel > strong { margin-top: 14px; font-size: 15px; }
 .detail-panel > span { margin-top: 4px; color: #98a3b1; font-size: 12px; }
@@ -231,7 +235,13 @@ dialog::backdrop { background: rgba(20,33,49,.42); backdrop-filter: blur(3px); }
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 300px 1fr; }
   .detail-panel { display: none; }
+  .type-badge { cursor: pointer; }
+  body.mobile-detail-open .detail-panel { position: fixed; z-index: 20; inset: 0; display: flex; width: 100%; height: 100dvh; border: 0; animation: detail-panel-in .18s ease-out; }
+  body.mobile-detail-open .mobile-detail-back { display: grid; }
+  body.mobile-detail-open .detail-heading { gap: 8px; }
 }
+
+@keyframes detail-panel-in { from { transform: translateX(24px); opacity: .75; } }
 
 @media (max-width: 760px) {
   .app-shell { display: block; }
@@ -246,7 +256,9 @@ dialog::backdrop { background: rgba(20,33,49,.42); backdrop-filter: blur(3px); }
   .chat-header { min-height: calc(68px + env(safe-area-inset-top)); padding: calc(10px + env(safe-area-inset-top)) 12px 10px 6px; gap: 4px; }
   .chat-header h1 { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .mobile-back-button { display: grid; }
-  .type-badge { flex: none; }
+  .type-badge { min-height: 44px; flex: none; }
+  body.mobile-detail-open .detail-panel { padding: calc(12px + env(safe-area-inset-top)) 20px calc(18px + env(safe-area-inset-bottom)); }
+  body.mobile-detail-open .detail-heading .small-button { min-height: 44px; }
   .message-list { padding: 16px 14px; }
   .message-stack { max-width: 82%; }
   .message-more-button { display: grid; }
@@ -271,4 +283,8 @@ dialog::backdrop { background: rgba(20,33,49,.42); backdrop-filter: blur(3px); }
   .checkbox-label { min-height: 44px; }
   .checkbox-label input { width: 20px; height: 20px; }
   .toast.visible { bottom: calc(18px + env(safe-area-inset-bottom)); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  body.mobile-detail-open .detail-panel { animation: none; }
 }

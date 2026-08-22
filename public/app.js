@@ -3,6 +3,11 @@ const state = {
   conversations: [],
   selectedId: null,
   messages: [],
+  messagesHasMore: false,
+  messagesCursor: null,
+  loadingOlderMessages: false,
+  messageLoadToken: 0,
+  followLatestMessage: true,
   status: { state: 'disconnected', error: '', selfId: null },
   query: '',
   replyTarget: null,
@@ -634,6 +639,12 @@ function applyAccountSnapshot(snapshot) {
   state.status = snapshot.status || state.status
   state.selectedId = null
   state.messages = []
+  state.messagesHasMore = false
+  state.messagesCursor = null
+  state.loadingOlderMessages = false
+  state.messageLoadToken += 1
+  setMobileDetailOpen(false)
+  if (history.state?.mobileDetailOpen) history.replaceState({ ...history.state, mobileDetailOpen: false }, '')
   resetComposer(true)
   closeContextMenu()
   renderAccounts()
@@ -687,8 +698,29 @@ function renderConversations() {
   }
 }
 
-function renderMessages() {
+function isMessageListNearBottom(threshold = 80) {
+  const list = elements.messageList
+  return list.scrollHeight - list.clientHeight - list.scrollTop <= threshold
+}
+
+function updateMessageHistoryStatus() {
+  const status = elements.messageList.querySelector('.message-history-status')
+  if (!status) return
+  status.textContent = state.loadingOlderMessages ? '正在加载更早消息…' : '继续上滑加载更早消息'
+  status.classList.toggle('loading', state.loadingOlderMessages)
+}
+
+function renderMessages(options = {}) {
+  const previousScrollTop = options.previousScrollTop ?? elements.messageList.scrollTop
+  const previousScrollHeight = options.previousScrollHeight ?? elements.messageList.scrollHeight
+  if (typeof options.stickToBottom === 'boolean') state.followLatestMessage = options.stickToBottom
   elements.messageList.replaceChildren()
+  if (state.messagesHasMore || state.loadingOlderMessages) {
+    const historyStatus = document.createElement('div')
+    historyStatus.className = `message-history-status ${state.loadingOlderMessages ? 'loading' : ''}`
+    historyStatus.textContent = state.loadingOlderMessages ? '正在加载更早消息…' : '继续上滑加载更早消息'
+    elements.messageList.append(historyStatus)
+  }
   let lastDate = ''
   for (const message of state.messages) {
     const dateLabel = new Date(message.timestamp).toLocaleDateString('zh-CN')
@@ -701,6 +733,7 @@ function renderMessages() {
     }
     const row = document.createElement('div')
     row.className = `message-row ${message.direction}`
+    row.dataset.messageId = message.id
     const avatar = document.createElement('span')
     avatar.className = 'message-avatar'
     renderAvatar(avatar, message.direction === 'outgoing' ? 'Q' : message.senderName, message.direction === 'incoming' ? message.avatarUrl : undefined)
@@ -748,7 +781,13 @@ function renderMessages() {
     elements.messageList.append(row)
   }
   requestAnimationFrame(() => {
-    elements.messageList.scrollTop = elements.messageList.scrollHeight
+    if (options.stickToBottom) {
+      elements.messageList.scrollTop = elements.messageList.scrollHeight
+    } else if (options.preservePrepend) {
+      elements.messageList.scrollTop = previousScrollTop + elements.messageList.scrollHeight - previousScrollHeight
+    } else {
+      elements.messageList.scrollTop = previousScrollTop
+    }
   })
 }
 
@@ -808,7 +847,6 @@ function renderSelectedConversation() {
     dd.textContent = value
     elements.detailList.append(dt, dd)
   }
-  renderMessages()
 }
 
 function formatDateTime(value) {
@@ -826,26 +864,89 @@ async function loadConversations() {
 
 async function selectConversation(id) {
   const shouldOpenMobileHistory = window.innerWidth < 760 && !document.body.classList.contains('mobile-chat-open')
+  const loadToken = ++state.messageLoadToken
+  setMobileDetailOpen(false)
+  if (history.state?.mobileDetailOpen) history.replaceState({ ...history.state, mobileDetailOpen: false }, '')
   if (state.selectedId !== id) resetComposer(true)
   closeContextMenu()
   state.selectedId = id
-  state.messages = await api(`/api/conversations/${encodeURIComponent(id)}/messages`)
+  state.messages = []
+  state.messagesHasMore = false
+  state.messagesCursor = null
+  state.loadingOlderMessages = false
+  const page = await api(`/api/conversations/${encodeURIComponent(id)}/messages?limit=200`)
+  if (state.selectedId !== id || state.messageLoadToken !== loadToken) return
+  state.messages = page.messages
+  state.messagesHasMore = page.hasMore
+  state.messagesCursor = page.nextCursor
   await api(`/api/conversations/${encodeURIComponent(id)}/read`, { method: 'POST' })
+  if (state.selectedId !== id || state.messageLoadToken !== loadToken) return
   const conversation = state.conversations.find((item) => item.id === id)
   if (conversation) conversation.unread = 0
   renderConversations()
   renderSelectedConversation()
+  renderMessages({ stickToBottom: true })
   if (window.innerWidth < 760) {
     document.body.classList.add('mobile-chat-open')
     if (shouldOpenMobileHistory) history.pushState({ ...history.state, mobileChatOpen: true }, '')
   }
 }
 
+async function loadOlderMessages() {
+  if (!state.selectedId || !state.messagesHasMore || !state.messagesCursor || state.loadingOlderMessages) return
+  const conversationId = state.selectedId
+  const loadToken = state.messageLoadToken
+  state.loadingOlderMessages = true
+  updateMessageHistoryStatus()
+  try {
+    const page = await api(`/api/conversations/${encodeURIComponent(conversationId)}/messages?limit=200&before=${encodeURIComponent(state.messagesCursor)}`)
+    if (state.selectedId !== conversationId || state.messageLoadToken !== loadToken) return
+    const previousScrollTop = elements.messageList.scrollTop
+    const previousScrollHeight = elements.messageList.scrollHeight
+    const existingIds = new Set(state.messages.map((message) => message.id))
+    state.messages = [...page.messages.filter((message) => !existingIds.has(message.id)), ...state.messages]
+    state.messagesHasMore = page.hasMore
+    state.messagesCursor = page.nextCursor
+    state.loadingOlderMessages = false
+    renderMessages({ previousScrollTop, previousScrollHeight, preservePrepend: true, stickToBottom: false })
+  } catch (error) {
+    if (state.selectedId === conversationId && state.messageLoadToken === loadToken) {
+      state.loadingOlderMessages = false
+      updateMessageHistoryStatus()
+      showToast(error.message, true)
+    }
+  }
+}
+
 function closeMobileChat() {
+  setMobileDetailOpen(false)
   document.body.classList.remove('mobile-chat-open')
   closeContextMenu()
   closeSendOptions()
 }
+
+function setMobileDetailOpen(open) {
+  document.body.classList.toggle('mobile-detail-open', open)
+  elements.chatType.setAttribute('aria-expanded', String(open))
+}
+
+function openMobileDetail() {
+  if (!state.selectedId || window.innerWidth > 1100) return
+  setMobileDetailOpen(true)
+  if (!history.state?.mobileDetailOpen) {
+    history.pushState({ ...history.state, mobileDetailOpen: true }, '')
+  }
+}
+
+function closeMobileDetail() {
+  setMobileDetailOpen(false)
+}
+
+elements.chatType.addEventListener('click', openMobileDetail)
+elements.mobileDetailBack.addEventListener('click', () => {
+  if (history.state?.mobileDetailOpen) history.back()
+  else closeMobileDetail()
+})
 
 elements.mobileBackButton.addEventListener('click', () => {
   if (history.state?.mobileChatOpen) history.back()
@@ -854,6 +955,7 @@ elements.mobileBackButton.addEventListener('click', () => {
 
 window.addEventListener('popstate', (event) => {
   document.body.classList.toggle('mobile-chat-open', Boolean(event.state?.mobileChatOpen && state.selectedId))
+  setMobileDetailOpen(Boolean(event.state?.mobileDetailOpen && state.selectedId && window.innerWidth <= 1100))
   closeContextMenu()
   closeSendOptions()
 })
@@ -1111,6 +1213,10 @@ document.addEventListener('pointerdown', (event) => {
 })
 document.addEventListener('keydown', (event) => {
   if (event.key === 'Escape') {
+    if (document.body.classList.contains('mobile-detail-open')) {
+      if (history.state?.mobileDetailOpen) history.back()
+      else closeMobileDetail()
+    }
     closeContextMenu()
     closeSendOptions()
   }
@@ -1118,8 +1224,21 @@ document.addEventListener('keydown', (event) => {
 window.addEventListener('resize', () => {
   closeContextMenu()
   if (window.innerWidth >= 760) document.body.classList.remove('mobile-chat-open')
+  if (window.innerWidth > 1100) {
+    closeMobileDetail()
+    if (history.state?.mobileDetailOpen) history.replaceState({ ...history.state, mobileDetailOpen: false }, '')
+  }
 })
-elements.messageList.addEventListener('scroll', closeContextMenu, { passive: true })
+elements.messageList.addEventListener('scroll', () => {
+  closeContextMenu()
+  state.followLatestMessage = isMessageListNearBottom()
+  if (elements.messageList.scrollTop <= 80) void loadOlderMessages()
+}, { passive: true })
+elements.messageList.addEventListener('load', (event) => {
+  if (event.target instanceof HTMLImageElement && state.followLatestMessage) {
+    requestAnimationFrame(() => { elements.messageList.scrollTop = elements.messageList.scrollHeight })
+  }
+}, true)
 
 elements.composer.addEventListener('submit', async (event) => {
   event.preventDefault()
@@ -1188,7 +1307,7 @@ elements.composer.addEventListener('submit', async (event) => {
     resetComposer(true)
     if (!state.messages.some((item) => item.id === message.id)) state.messages.push(message)
     await loadConversations()
-    renderMessages()
+    renderMessages({ stickToBottom: true })
   } catch (error) {
     showToast(error.message, true)
   } finally {
@@ -1203,13 +1322,14 @@ eventSource.addEventListener('status', (event) => {
 })
 eventSource.addEventListener('message', async (event) => {
   const payload = JSON.parse(event.data)
+  const shouldFollowLatest = state.followLatestMessage || isMessageListNearBottom()
   if (payload.message.conversationId === state.selectedId && !state.messages.some((item) => item.id === payload.message.id)) {
     state.messages.push(payload.message)
   }
   await loadConversations()
   if (payload.message.conversationId === state.selectedId) {
     await api(`/api/conversations/${encodeURIComponent(state.selectedId)}/read`, { method: 'POST' })
-    renderMessages()
+    renderMessages({ stickToBottom: shouldFollowLatest })
   }
 })
 eventSource.addEventListener('message-update', async (event) => {

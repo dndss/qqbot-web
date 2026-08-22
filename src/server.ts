@@ -12,7 +12,7 @@ import {
   parseForwardText,
 } from './forward-message.ts'
 import { JsonStore } from './store.ts'
-import type { BotConfig, Conversation, ConversationType, ForwardMessagePart, GroupBotState, IncomingMessageLike, MessagePart, SenderRole, StoredMessage } from './types.ts'
+import type { BotConfig, Conversation, ConversationType, ForwardMessagePart, GroupBotState, IncomingMessageLike, MessagePage, MessagePart, SenderRole, StoredMessage } from './types.ts'
 
 type ConnectionState = 'disconnected' | 'connecting' | 'connected' | 'error'
 
@@ -223,18 +223,18 @@ function scheduleForwardImageCache(conversationId: string, accountId: string): v
   forwardCacheRequests.set(key, request)
 }
 
-async function prepareConversationMessages(conversationId: string, limit: number): Promise<StoredMessage[]> {
+async function prepareConversationMessages(conversationId: string, limit: number, before?: string): Promise<MessagePage> {
   const accountId = store.getActiveAccount()?.id
-  const messages = store.listMessages(conversationId, limit)
-  if (!accountId) return messages
-  const upgrades = messages.flatMap((message) => {
+  const page = store.listMessagesPage(conversationId, limit, before)
+  if (!accountId) return page
+  const upgrades = page.messages.flatMap((message) => {
     if (forwardPart(message)) return []
     const parsed = parseForwardText(message.content)
     return parsed ? [{ messageId: message.id, patch: { parts: [parsed] } }] : []
   })
   if (upgrades.length) await store.updateMessages(conversationId, upgrades)
   scheduleForwardImageCache(conversationId, accountId)
-  return store.listMessages(conversationId, limit)
+  return store.listMessagesPage(conversationId, limit, before)
 }
 
 function messageSceneIndexes(event: IncomingMessageLike): { msgIdx?: string; refMsgIdx?: string } {
@@ -803,9 +803,15 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       return true
     }
     if (action === 'messages' && request.method === 'GET') {
+      const requestedLimit = Number(url.searchParams.get('limit') ?? 200)
+      if (!Number.isInteger(requestedLimit) || requestedLimit < 1 || requestedLimit > 200) {
+        throw new Error('limit 必须是 1 到 200 之间的整数')
+      }
+      const before = url.searchParams.get('before')?.trim() || undefined
       sendJson(response, 200, await prepareConversationMessages(
         conversationId,
-        Number(url.searchParams.get('limit') ?? 200),
+        requestedLimit,
+        before,
       ))
       return true
     }

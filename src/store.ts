@@ -8,6 +8,7 @@ import type {
   Conversation,
   Database,
   PublicBotAccount,
+  MessagePage,
   StoredMessage,
 } from './types.ts'
 
@@ -154,9 +155,25 @@ export class JsonStore {
   }
 
   listMessages(conversationId: string, limit = 200): StoredMessage[] {
-    return this.#database.messages
-      .filter((message) => message.conversationId === conversationId)
-      .slice(-Math.min(Math.max(limit, 1), 500))
+    return this.listMessagesPage(conversationId, limit).messages
+  }
+
+  listMessagesPage(conversationId: string, limit = 200, before?: string): MessagePage {
+    const messages = this.#database.messages.filter((message) => message.conversationId === conversationId)
+    let end = messages.length
+    if (before) {
+      end = messages.findIndex((message) => message.id === before)
+      if (end < 0) throw new Error('消息分页游标已失效，请重新打开会话')
+    }
+    const pageSize = Math.min(Math.max(Number.isInteger(limit) ? limit : 200, 1), 200)
+    const start = Math.max(0, end - pageSize)
+    const page = messages.slice(start, end)
+    const hasMore = start > 0
+    return {
+      messages: page,
+      hasMore,
+      nextCursor: hasMore ? page[0]?.id ?? null : null,
+    }
   }
 
   async addMessage(conversation: Conversation, message: StoredMessage): Promise<void> {

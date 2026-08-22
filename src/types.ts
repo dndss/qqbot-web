@@ -109,6 +109,12 @@ export interface StoredMessage {
   recalledAt?: number
 }
 
+export interface MessagePage {
+  messages: StoredMessage[]
+  hasMore: boolean
+  nextCursor: string | null
+}
+
 export interface Database {
   conversations: Conversation[]
   messages: StoredMessage[]
