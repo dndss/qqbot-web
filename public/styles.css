@@ -108,16 +108,23 @@ button { cursor: pointer; }
 .message-bubble.has-rich-content { min-width: 42px; }
 .message-bubble.recalled { color: #9aa5b2; font-style: italic; }
 .message-row.outgoing .message-bubble.recalled { color: rgba(255,255,255,.82); }
+.message-upload-status { display: flex; align-items: center; gap: 5px; color: #8794a5; font-size: 10px; }
+.message-upload-status::before { width: 6px; height: 6px; flex: none; border-radius: 50%; background: currentColor; content: ''; }
+.message-upload-status.queued, .message-upload-status.uploading { color: #2b7dcb; }
+.message-upload-status.uploading::before { animation: pulse 1s infinite; }
+.message-upload-status.success { color: #23966b; }
+.message-upload-status.failed { max-width: min(420px, 62vw); color: #d04457; text-align: right; overflow-wrap: anywhere; }
 .message-quote-preview { max-width: 100%; padding: 6px 9px; overflow: hidden; border-left: 3px solid #9fc5e8; border-radius: 5px; color: #6f7e91; background: rgba(233,240,247,.85); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
 .message-row.outgoing .message-quote-preview { border-left-color: #d6eaff; color: #e7f2ff; background: rgba(35,111,188,.78); }
 .message-image-link { display: block; width: fit-content; max-width: 100%; margin: 3px 0; border-radius: 10px; overflow: hidden; line-height: 0; }
 .message-image { display: block; width: auto; max-width: min(360px, 68vw); height: auto; max-height: 420px; object-fit: contain; background: #edf1f5; }
-.message-face { display: inline-block; margin: 0 2px; padding: 1px 7px; border-radius: 8px; color: #9b5f12; background: #fff1ce; white-space: nowrap; }
+.message-face { display: inline-block; width: 1em; height: 1em; margin: 0 .08em; object-fit: contain; vertical-align: -.125em; }
+.message-face-fallback { display: inline-block; margin: 0 2px; padding: 1px 7px; border-radius: 8px; color: #9b5f12; background: #fff1ce; white-space: nowrap; }
 .message-mention { color: #1875d1; font-weight: 600; }
 .message-reference { display: block; margin-bottom: 6px; padding: 5px 8px; border-left: 3px solid #a9c8e8; border-radius: 4px; color: #718196; background: #f2f6fa; font-size: 12px; }
 .message-attachment, .message-media-fallback { display: inline-block; margin: 3px 2px; padding: 5px 9px; border-radius: 8px; color: #2876bd; background: #eaf4ff; text-decoration: none; }
 .message-attachment:hover { text-decoration: underline; }
-.message-row.outgoing .message-face, .message-row.outgoing .message-reference, .message-row.outgoing .message-attachment, .message-row.outgoing .message-media-fallback { color: white; background: rgba(255,255,255,.17); }
+.message-row.outgoing .message-face-fallback, .message-row.outgoing .message-reference, .message-row.outgoing .message-attachment, .message-row.outgoing .message-media-fallback { color: white; background: rgba(255,255,255,.17); }
 .message-row.outgoing .message-mention { color: #fff; }
 .forward-card { width: min(480px, 64vw); overflow: hidden; border: 1px solid #dfe7ef; border-radius: 12px; color: #35465a; background: #f8fafc; white-space: normal; }
 .forward-title { padding: 9px 11px; border-bottom: 1px solid #e3eaf1; color: #52657a; background: #eef4f9; font-size: 12px; font-weight: 700; }

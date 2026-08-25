@@ -15,6 +15,8 @@ const state = {
   composerFormat: 'text',
   pendingMediaType: null,
   pendingMediaSource: null,
+  uploadMessages: new Map(),
+  uploadQueues: new Map(),
   sendShortcut: localStorage.getItem('qqbot-send-shortcut') === 'ctrl-enter' ? 'ctrl-enter' : 'enter',
 }
 
@@ -225,9 +227,26 @@ function renderMessagePart(container, part) {
       break
     }
     case 'face': {
-      const face = document.createElement('span')
+      const id = String(part.id || '')
+      const fallbackText = part.text || `[表情${id ? ` ${id}` : ''}]`
+      const fallback = () => {
+        const label = document.createElement('span')
+        label.className = 'message-face-fallback'
+        label.textContent = fallbackText
+        return label
+      }
+      if (!/^\d+$/.test(id)) {
+        container.append(fallback())
+        break
+      }
+      const face = document.createElement('img')
       face.className = 'message-face'
-      face.textContent = part.text || `[表情${part.id ? ` ${part.id}` : ''}]`
+      face.src = `/qface/apng/${id}.png`
+      face.alt = fallbackText
+      face.title = fallbackText
+      face.loading = 'lazy'
+      face.decoding = 'async'
+      face.addEventListener('error', () => face.replaceWith(fallback()))
       container.append(face)
       break
     }
@@ -288,6 +307,16 @@ function renderMessageContent(container, message) {
   for (const part of message.parts) {
     if (part.type === 'reply' && message.refMsgIdx) continue
     renderMessagePart(container, part)
+  }
+}
+
+function uploadStatusText(message) {
+  switch (message.uploadState) {
+    case 'queued': return '等待上传'
+    case 'uploading': return '正在上传到腾讯服务器…'
+    case 'success': return '发送成功'
+    case 'failed': return `发送失败${message.uploadError ? `：${message.uploadError}` : ''}`
+    default: return ''
   }
 }
 
@@ -516,6 +545,7 @@ async function recallFromMenu(message) {
   const updated = await api(`/api/conversations/${encodeURIComponent(state.selectedId)}/messages/${encodeURIComponent(message.id)}`, {
     method: 'DELETE',
   })
+  state.uploadMessages.get(updated.conversationId)?.delete(updated.id)
   const index = state.messages.findIndex((item) => item.id === updated.id)
   if (index >= 0) state.messages[index] = updated
   await loadConversations()
@@ -533,6 +563,10 @@ async function muteFromMenu(message, durationMinutes) {
 }
 
 function openMessageMenu(event, message, anchor) {
+  if (message.uploadState && message.uploadState !== 'success') {
+    closeContextMenu()
+    return
+  }
   const actions = []
   const conversation = state.conversations.find((item) => item.id === message.conversationId)
   const targetIsManager = (message.roles || []).some((role) => role === 'owner' || role === 'admin')
@@ -777,6 +811,14 @@ function renderMessages(options = {}) {
       stack.append(preview)
     }
     stack.append(bubble)
+    const uploadStatus = uploadStatusText(message)
+    if (uploadStatus) {
+      const status = document.createElement('div')
+      status.className = `message-upload-status ${message.uploadState}`
+      status.setAttribute('role', 'status')
+      status.textContent = uploadStatus
+      stack.append(status)
+    }
     row.append(avatar, stack)
     elements.messageList.append(row)
   }
@@ -788,6 +830,94 @@ function renderMessages(options = {}) {
     } else {
       elements.messageList.scrollTop = previousScrollTop
     }
+  })
+}
+
+function conversationUploadMessages(conversationId) {
+  let messages = state.uploadMessages.get(conversationId)
+  if (!messages) {
+    messages = new Map()
+    state.uploadMessages.set(conversationId, messages)
+  }
+  return messages
+}
+
+function mergeUploadMessages(conversationId, messages) {
+  const merged = [...messages]
+  const indexes = new Map(merged.map((message, index) => [message.id, index]))
+  for (const uploadMessage of state.uploadMessages.get(conversationId)?.values() || []) {
+    const index = indexes.get(uploadMessage.id)
+    if (index === undefined) {
+      indexes.set(uploadMessage.id, merged.length)
+      merged.push(uploadMessage)
+    } else {
+      merged[index] = uploadMessage.uploadState === 'success'
+        ? { ...merged[index], uploadState: 'success' }
+        : { ...merged[index], ...uploadMessage }
+    }
+  }
+  return merged.sort((left, right) => left.timestamp - right.timestamp)
+}
+
+function addUploadMessage(message) {
+  conversationUploadMessages(message.conversationId).set(message.id, message)
+  if (state.selectedId !== message.conversationId) return
+  state.messages.push(message)
+  state.messages.sort((left, right) => left.timestamp - right.timestamp)
+  renderMessages({ stickToBottom: true })
+}
+
+function updateUploadMessage(conversationId, messageId, patch) {
+  const messages = conversationUploadMessages(conversationId)
+  const current = messages.get(messageId)
+  if (!current) return
+  const updated = { ...current, ...patch }
+  messages.set(messageId, updated)
+  if (state.selectedId !== conversationId) return
+  const index = state.messages.findIndex((message) => message.id === messageId)
+  if (index >= 0) state.messages[index] = updated
+  renderMessages()
+}
+
+function completeUploadMessage(conversationId, temporaryId, message) {
+  const messages = conversationUploadMessages(conversationId)
+  messages.delete(temporaryId)
+  const completed = { ...message, uploadState: 'success' }
+  messages.set(completed.id, completed)
+  if (state.selectedId !== conversationId) return
+  state.messages = state.messages.filter((item) => item.id !== temporaryId && item.id !== completed.id)
+  state.messages.push(completed)
+  state.messages.sort((left, right) => left.timestamp - right.timestamp)
+  renderMessages({ stickToBottom: state.followLatestMessage })
+}
+
+async function sendQueuedUpload(task) {
+  try {
+    updateUploadMessage(task.conversationId, task.temporaryId, { uploadState: 'uploading' })
+    const message = await api(task.endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/octet-stream' },
+      body: task.file,
+    })
+    completeUploadMessage(task.conversationId, task.temporaryId, message)
+    void loadConversations().catch((error) => showToast(error.message, true))
+  } catch (error) {
+    const errorMessage = error?.message || String(error)
+    updateUploadMessage(task.conversationId, task.temporaryId, {
+      status: 'failed',
+      uploadState: 'failed',
+      uploadError: errorMessage,
+    })
+    showToast(`${task.conversationTitle}发送失败：${errorMessage}`, true)
+  }
+}
+
+function enqueueUpload(task) {
+  const previous = state.uploadQueues.get(task.conversationId) || Promise.resolve()
+  const queued = previous.catch(() => undefined).then(() => sendQueuedUpload(task))
+  state.uploadQueues.set(task.conversationId, queued)
+  void queued.then(() => {
+    if (state.uploadQueues.get(task.conversationId) === queued) state.uploadQueues.delete(task.conversationId)
   })
 }
 
@@ -876,7 +1006,7 @@ async function selectConversation(id) {
   state.loadingOlderMessages = false
   const page = await api(`/api/conversations/${encodeURIComponent(id)}/messages?limit=200`)
   if (state.selectedId !== id || state.messageLoadToken !== loadToken) return
-  state.messages = page.messages
+  state.messages = mergeUploadMessages(id, page.messages)
   state.messagesHasMore = page.hasMore
   state.messagesCursor = page.nextCursor
   await api(`/api/conversations/${encodeURIComponent(id)}/read`, { method: 'POST' })
@@ -1247,6 +1377,53 @@ elements.composer.addEventListener('submit', async (event) => {
   const content = elements.messageInput.value.trim()
   const mediaUrl = elements.mediaUrl.value.trim()
   const mediaFile = elements.mediaFile.files[0]
+  if (mediaFile) {
+    try {
+      if (mediaUrl) throw new Error('本地文件和公网 URL 只能选择一种')
+      validateSelectedFile(mediaFile)
+      const conversationId = state.selectedId
+      const conversation = state.conversations.find((item) => item.id === conversationId)
+      if (!conversation) throw new Error('会话不存在')
+      const replyTarget = state.replyTarget ? { ...state.replyTarget } : undefined
+      const params = new URLSearchParams({ type, filename: mediaFile.name })
+      if (type === 'text' && content) params.set('content', content)
+      if (replyTarget) {
+        params.set('replyMessageId', replyTarget.messageId)
+        params.set('quote', String(replyTarget.quote))
+      }
+      const mediaType = type === 'text' ? 'image' : type
+      const mediaLabel = mediaTypeRules[mediaType]?.label || '文件'
+      const queueIsBusy = state.uploadQueues.has(conversationId)
+      const temporaryId = `upload-${Date.now()}-${Math.random().toString(36).slice(2)}`
+      const quotedMessage = replyTarget?.quote
+        ? state.messages.find((message) => message.id === replyTarget.messageId)
+        : undefined
+      const temporaryMessage = {
+        id: temporaryId,
+        conversationId,
+        direction: 'outgoing',
+        senderId: state.status.selfId || 'bot',
+        senderName: '机器人',
+        content: [content, `[${mediaLabel}：${mediaFile.name}]`].filter(Boolean).join(' '),
+        ...(quotedMessage?.msgIdx ? { refMsgIdx: quotedMessage.msgIdx } : {}),
+        timestamp: Date.now(),
+        status: 'pending',
+        uploadState: queueIsBusy ? 'queued' : 'uploading',
+      }
+      resetComposer(true)
+      addUploadMessage(temporaryMessage)
+      enqueueUpload({
+        conversationId,
+        conversationTitle: conversation.title,
+        temporaryId,
+        endpoint: `/api/conversations/${encodeURIComponent(conversationId)}/messages?${params}`,
+        file: mediaFile,
+      })
+    } catch (error) {
+      showToast(error.message, true)
+    }
+    return
+  }
   elements.sendButton.disabled = true
   try {
     let message
@@ -1263,20 +1440,6 @@ elements.composer.addEventListener('submit', async (event) => {
           } : {}),
           mentions: state.mentions.filter((mention) => content.includes(mention.token)),
         }),
-      })
-    } else if (mediaFile) {
-      if (mediaUrl) throw new Error('本地文件和公网 URL 只能选择一种')
-      validateSelectedFile(mediaFile)
-      const params = new URLSearchParams({ type, filename: mediaFile.name })
-      if (type === 'text' && content) params.set('content', content)
-      if (state.replyTarget) {
-        params.set('replyMessageId', state.replyTarget.messageId)
-        params.set('quote', String(state.replyTarget.quote))
-      }
-      message = await api(`${endpoint}?${params}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/octet-stream' },
-        body: mediaFile,
       })
     } else if (type === 'text') {
       if (!content && !mediaUrl) throw new Error('请输入消息内容或选择图片')
@@ -1334,6 +1497,7 @@ eventSource.addEventListener('message', async (event) => {
 })
 eventSource.addEventListener('message-update', async (event) => {
   const updated = JSON.parse(event.data)
+  state.uploadMessages.get(updated.conversationId)?.delete(updated.id)
   if (updated.conversationId === state.selectedId) {
     const index = state.messages.findIndex((item) => item.id === updated.id)
     if (index >= 0) state.messages[index] = updated

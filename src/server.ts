@@ -941,6 +941,8 @@ const mimeTypes: Record<string, string> = {
   '.js': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
+  '.png': 'image/png',
+  '.gif': 'image/gif',
 }
 
 async function serveStatic(response: ServerResponse, pathname: string): Promise<void> {
