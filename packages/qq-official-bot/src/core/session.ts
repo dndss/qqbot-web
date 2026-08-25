@@ -217,11 +217,11 @@ export class Session<T extends ReceiverMode, M extends ApplicationPlatform = nev
         }, 0);
     }
 
-    async start() {
-        return new Promise<void>(async (resolve) => {
-            await this.getAccessToken()
-            this.receiver.emit('start',this)
-            this.receiver.on('ready',resolve)
+    async start(): Promise<void> {
+        await this.getAccessToken()
+        return new Promise<void>((resolve) => {
+            this.receiver.once('ready', resolve)
+            this.receiver.emit('start', this)
         })
     }
 

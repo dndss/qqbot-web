@@ -138,6 +138,18 @@ bot.on('ready', () => {
 })
 ```
 
+`start()` 会等待机器人连接就绪。访问令牌获取失败（例如 `appid` 或 `secret`
+无效）时，返回的 Promise 会直接 reject，调用方应捕获错误，避免阻塞自身的
+初始化流程：
+
+```typescript
+try {
+    await bot.start()
+} catch (error) {
+    console.error('机器人启动失败', error)
+}
+```
+
 ### 停止机器人
 
 停止机器人并断开与 QQ 服务器的连接。

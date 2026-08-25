@@ -227,6 +227,8 @@ export namespace Message {
         let template = (payload.content || '').trimStart();
         let result: MessageElem[] = []
         let brief: string = ''
+        const hasImageAttachment = Array.isArray(payload.attachments)
+            && payload.attachments.some((attachment: Dict) => attachment.content_type?.startsWith('image/'))
         // 1. 处理文字表情混排
         const regex = /("[^"]*?"|'[^']*?'|`[^`]*?`|“[^”]*?”|‘[^’]*?’|<[^>]+?>)/;
         if (payload.message_reference) {
@@ -262,6 +264,8 @@ export namespace Message {
             if (match.startsWith('<')) {
                 let [type, ...attrs] = match.slice(1, -1).split(',');
                 if (type.startsWith('faceType')) {
+                    // faceType=6 is the placeholder for an image-backed sticker.
+                    if (type === 'faceType=6' && hasImageAttachment) continue
                     type = 'face'
                     attrs = attrs.map((attr: string) => attr.replace('faceId', 'id'))
                 } else if (type.startsWith('@')) {
