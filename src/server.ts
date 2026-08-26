@@ -251,9 +251,12 @@ function messageSceneIndexes(event: IncomingMessageLike): { msgIdx?: string; ref
   return { ...(msgIdx ? { msgIdx } : {}), ...(refMsgIdx ? { refMsgIdx } : {}) }
 }
 
-async function getGroupProfile(groupOpenid: string): Promise<Partial<Conversation>> {
+async function getGroupProfile(
+  groupOpenid: string,
+  options: { force?: boolean } = {},
+): Promise<Partial<Conversation>> {
   const existing = store.getConversation(`group:${groupOpenid}`)
-  if (existing?.groupMemberCount !== undefined || existing?.description || existing?.category || existing?.tags?.length) {
+  if (!options.force && (existing?.groupMemberCount !== undefined || existing?.description || existing?.category || existing?.tags?.length)) {
     return {
       title: existing.title,
       groupMemberCount: existing.groupMemberCount,
@@ -326,6 +329,20 @@ async function getGroupBotState(
   }
 }
 
+async function getGroupDetails(
+  groupOpenid: string,
+  options: { force?: boolean; tolerateBotStateFailure?: boolean } = {},
+): Promise<Partial<Conversation>> {
+  const [profile, botState] = await Promise.all([
+    getGroupProfile(groupOpenid, { force: options.force }),
+    getGroupBotState(groupOpenid, {
+      force: options.force,
+      tolerateFailure: options.tolerateBotStateFailure,
+    }),
+  ])
+  return { ...profile, ...(botState ? { botState } : {}) }
+}
+
 async function normalizeIncoming(event: IncomingMessageLike, accountId: string): Promise<{ conversation: Conversation; message: StoredMessage } | null> {
   const senderId = event.sender?.user_id ?? event.user_id ?? 'unknown'
   const senderName = event.sender?.user_name || `用户 ${shortId(senderId)}`
@@ -340,11 +357,7 @@ async function normalizeIncoming(event: IncomingMessageLike, accountId: string):
   if (event.message_type === 'group' && event.group_id) {
     type = 'group'
     targetId = event.group_id
-    const [groupProfile, botState] = await Promise.all([
-      getGroupProfile(targetId),
-      getGroupBotState(targetId, { tolerateFailure: true }),
-    ])
-    profile = { ...groupProfile, ...(botState ? { botState } : {}) }
+    profile = await getGroupDetails(targetId, { tolerateBotStateFailure: true })
     title = profile.title || event.group_name || `群聊 ${shortId(targetId)}`
     subtitle = 'QQ群聊'
   } else if (event.message_type === 'private' && event.user_id) {
@@ -927,8 +940,8 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       sendJson(response, 400, { error: '只有群聊会话支持机器人群内状态' })
       return true
     }
-    const botState = await getGroupBotState(conversation.targetId, { force: true })
-    const updated = await store.updateConversation(conversation.id, { botState })
+    const details = await getGroupDetails(conversation.targetId, { force: true })
+    const updated = await store.updateConversation(conversation.id, details)
     publish('conversation', updated)
     sendJson(response, 200, updated)
     return true
