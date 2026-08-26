@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { appendFile, mkdir, readdir, readFile, rename, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import type {
   AccountRegistry,
@@ -14,12 +14,17 @@ import type {
 
 const EMPTY_DATABASE: Database = { conversations: [], messages: [] }
 const EMPTY_REGISTRY: AccountRegistry = { selectedAccountId: null, accounts: [] }
+const MESSAGE_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
+  timeZone: 'Asia/Shanghai',
+  year: 'numeric',
+  month: '2-digit',
+  day: '2-digit',
+})
 
 export class JsonStore {
   readonly dataDirectory: string
   readonly accountsPath: string
   readonly legacyConfigPath: string
-  readonly legacyDatabasePath: string
   #registry: AccountRegistry = structuredClone(EMPTY_REGISTRY)
   #database: Database = structuredClone(EMPTY_DATABASE)
   #writeQueue: Promise<void> = Promise.resolve()
@@ -28,7 +33,6 @@ export class JsonStore {
     this.dataDirectory = dataDirectory
     this.accountsPath = join(dataDirectory, 'accounts.json')
     this.legacyConfigPath = join(dataDirectory, 'config.json')
-    this.legacyDatabasePath = join(dataDirectory, 'messages.json')
   }
 
   async initialize(): Promise<void> {
@@ -37,7 +41,6 @@ export class JsonStore {
     this.#registry.accounts ??= []
     this.#registry.selectedAccountId ??= null
 
-    let legacyDatabase: Database | undefined
     if (this.#registry.accounts.length === 0) {
       const legacyConfig = await this.#readJson<BotConfig | null>(this.legacyConfigPath, null)
       if (legacyConfig?.appid && legacyConfig.secret) {
@@ -50,7 +53,6 @@ export class JsonStore {
         }
         this.#registry.accounts.push(account)
         this.#registry.selectedAccountId = account.id
-        legacyDatabase = await this.#readJson<Database>(this.legacyDatabasePath, EMPTY_DATABASE)
         await this.#writeJson(this.accountsPath, this.#registry)
       }
     }
@@ -62,7 +64,7 @@ export class JsonStore {
       this.#registry.selectedAccountId = this.#registry.accounts[0]?.id ?? null
       await this.#writeJson(this.accountsPath, this.#registry)
     }
-    await this.#loadActiveDatabase(legacyDatabase)
+    await this.#loadActiveDatabase()
   }
 
   getActiveAccount(): BotAccount | null {
@@ -177,7 +179,8 @@ export class JsonStore {
   }
 
   async addMessage(conversation: Conversation, message: StoredMessage): Promise<void> {
-    if (!this.getActiveAccount()) throw new Error('尚未选择 Bot 账号')
+    const account = this.getActiveAccount()
+    if (!account) throw new Error('尚未选择 Bot 账号')
     const existingIndex = this.#database.conversations.findIndex((item) => item.id === conversation.id)
     const existing = existingIndex >= 0 ? this.#database.conversations[existingIndex] : undefined
     const nextConversation: Conversation = {
@@ -194,15 +197,21 @@ export class JsonStore {
       (item) => item.id === message.id && item.conversationId === message.conversationId,
     )
     if (!duplicate) this.#database.messages.push(message)
-    if (this.#database.messages.length > 20_000) this.#database.messages = this.#database.messages.slice(-20_000)
-    await this.#persist()
+
+    const conversations = structuredClone(this.#database.conversations)
+    const storedMessage = structuredClone(message)
+    const messagePath = this.#messagePath(account.id, message)
+    await this.#enqueueWrite(async () => {
+      await this.#writeJson(this.#conversationsPath(account.id), conversations)
+      if (!duplicate) await this.#appendJsonLine(messagePath, storedMessage)
+    })
   }
 
   async markRead(conversationId: string): Promise<void> {
     const conversation = this.getConversation(conversationId)
     if (!conversation || conversation.unread === 0) return
     conversation.unread = 0
-    await this.#persist()
+    await this.#persistConversations()
   }
 
   async updateMessage(
@@ -210,6 +219,8 @@ export class JsonStore {
     messageId: string,
     patch: Partial<StoredMessage>,
   ): Promise<StoredMessage> {
+    const account = this.getActiveAccount()
+    if (!account) throw new Error('尚未选择 Bot 账号')
     const message = this.getMessage(conversationId, messageId)
     if (!message) throw new Error('消息不存在')
     Object.assign(message, patch, { id: message.id, conversationId: message.conversationId })
@@ -217,8 +228,16 @@ export class JsonStore {
     const latest = this.#database.messages
       .filter((item) => item.conversationId === conversationId)
       .at(-1)
-    if (conversation && latest?.id === message.id) conversation.lastMessage = message.content
-    await this.#persist()
+    const conversationChanged = Boolean(conversation && latest?.id === message.id)
+    if (conversationChanged && conversation) conversation.lastMessage = message.content
+
+    const messagePath = this.#messagePath(account.id, message)
+    const messages = this.#messagesInFile(account.id, messagePath)
+    const conversations = conversationChanged ? structuredClone(this.#database.conversations) : undefined
+    await this.#enqueueWrite(async () => {
+      await this.#writeJsonLines(messagePath, messages)
+      if (conversations) await this.#writeJson(this.#conversationsPath(account.id), conversations)
+    })
     return structuredClone(message)
   }
 
@@ -226,14 +245,23 @@ export class JsonStore {
     conversationId: string,
     updates: Array<{ messageId: string; patch: Partial<StoredMessage> }>,
   ): Promise<StoredMessage[]> {
+    const account = this.getActiveAccount()
+    if (!account) throw new Error('尚未选择 Bot 账号')
     const changed: StoredMessage[] = []
+    const paths = new Set<string>()
     for (const update of updates) {
       const message = this.getMessage(conversationId, update.messageId)
       if (!message) continue
       Object.assign(message, update.patch, { id: message.id, conversationId: message.conversationId })
       changed.push(structuredClone(message))
+      paths.add(this.#messagePath(account.id, message))
     }
-    if (changed.length) await this.#persist()
+    if (changed.length) {
+      const files = [...paths].map((path) => ({ path, messages: this.#messagesInFile(account.id, path) }))
+      await this.#enqueueWrite(async () => {
+        for (const file of files) await this.#writeJsonLines(file.path, file.messages)
+      })
+    }
     return changed
   }
 
@@ -241,39 +269,108 @@ export class JsonStore {
     const conversation = this.getConversation(id)
     if (!conversation) throw new Error('会话不存在')
     Object.assign(conversation, patch, { id: conversation.id })
-    await this.#persist()
+    await this.#persistConversations()
     return structuredClone(conversation)
   }
 
-  async #loadActiveDatabase(legacyFallback?: Database): Promise<void> {
+  async #loadActiveDatabase(): Promise<void> {
     const account = this.getActiveAccount()
     if (!account) {
       this.#database = structuredClone(EMPTY_DATABASE)
       return
     }
-    const path = this.#databasePath(account.id)
-    this.#database = await this.#readJson<Database>(path, legacyFallback ?? EMPTY_DATABASE)
-    this.#database.conversations ??= []
-    this.#database.messages ??= []
-    for (const message of this.#database.messages) {
+    const conversations = await this.#readJson<Conversation[]>(this.#conversationsPath(account.id), [])
+    const messages = await this.#readMessages(account.id)
+    for (const message of messages) {
       if (message.direction === 'incoming' && !message.senderOpenid && message.senderId !== 'unknown') {
         message.senderOpenid = message.senderId
       }
     }
-    if (legacyFallback) await this.#writeJson(path, this.#database)
+    this.#database = { conversations, messages }
   }
 
-  async #persist(): Promise<void> {
+  async #persistConversations(): Promise<void> {
     const account = this.getActiveAccount()
     if (!account) throw new Error('尚未选择 Bot 账号')
-    const path = this.#databasePath(account.id)
-    const snapshot = structuredClone(this.#database)
-    this.#writeQueue = this.#writeQueue.then(() => this.#writeJson(path, snapshot))
-    await this.#writeQueue
+    const conversations = structuredClone(this.#database.conversations)
+    await this.#enqueueWrite(() => this.#writeJson(this.#conversationsPath(account.id), conversations))
   }
 
-  #databasePath(accountId: string): string {
-    return join(this.dataDirectory, 'bots', accountId, 'messages.json')
+  async #enqueueWrite(task: () => Promise<void>): Promise<void> {
+    const write = this.#writeQueue.then(task)
+    this.#writeQueue = write.catch(() => undefined)
+    await write
+  }
+
+  #conversationsPath(accountId: string): string {
+    return join(this.dataDirectory, 'bots', accountId, 'conversations.json')
+  }
+
+  #messagePath(accountId: string, message: StoredMessage): string {
+    const conversation = this.getConversation(message.conversationId)
+    if (!conversation) throw new Error(`消息所属会话不存在：${message.conversationId}`)
+    const category = conversation.type === 'group' ? 'groups' : 'users'
+    const targetDirectory = `id_${encodeURIComponent(conversation.targetId)}`
+    return join(
+      this.dataDirectory,
+      'bots',
+      accountId,
+      'messages',
+      category,
+      targetDirectory,
+      `${this.#messageDate(message.timestamp)}.jsonl`,
+    )
+  }
+
+  #messageDate(timestamp: number): string {
+    const date = new Date(timestamp)
+    if (Number.isNaN(date.getTime())) throw new Error(`消息时间无效：${timestamp}`)
+    const parts = Object.fromEntries(
+      MESSAGE_DATE_FORMATTER.formatToParts(date).map((part) => [part.type, part.value]),
+    )
+    return `${parts.year}-${parts.month}-${parts.day}`
+  }
+
+  #messagesInFile(accountId: string, path: string): StoredMessage[] {
+    return this.#database.messages
+      .filter((message) => this.#messagePath(accountId, message) === path)
+      .map((message) => structuredClone(message))
+  }
+
+  async #readMessages(accountId: string): Promise<StoredMessage[]> {
+    const root = join(this.dataDirectory, 'bots', accountId, 'messages')
+    const messages: StoredMessage[] = []
+    for (const category of ['groups', 'users']) {
+      const categoryPath = join(root, category)
+      for (const target of await this.#readDirectory(categoryPath)) {
+        if (!target.isDirectory()) continue
+        const targetPath = join(categoryPath, target.name)
+        for (const file of await this.#readDirectory(targetPath)) {
+          if (!file.isFile() || !file.name.endsWith('.jsonl')) continue
+          const path = join(targetPath, file.name)
+          const lines = (await readFile(path, 'utf8')).split(/\r?\n/)
+          for (let index = 0; index < lines.length; index += 1) {
+            const line = lines[index].trim()
+            if (!line) continue
+            try {
+              messages.push(JSON.parse(line) as StoredMessage)
+            } catch (error) {
+              throw new Error(`聊天记录解析失败：${path}:${index + 1}`, { cause: error })
+            }
+          }
+        }
+      }
+    }
+    return messages.sort((a, b) => a.timestamp - b.timestamp || a.id.localeCompare(b.id))
+  }
+
+  async #readDirectory(path: string) {
+    try {
+      return await readdir(path, { withFileTypes: true })
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return []
+      throw error
+    }
   }
 
   async #readJson<T>(path: string, fallback: T): Promise<T> {
@@ -285,10 +382,24 @@ export class JsonStore {
     }
   }
 
+  async #appendJsonLine(path: string, value: unknown): Promise<void> {
+    await mkdir(dirname(path), { recursive: true })
+    await appendFile(path, `${JSON.stringify(value)}\n`, { encoding: 'utf8', mode: 0o600 })
+  }
+
+  async #writeJsonLines(path: string, messages: StoredMessage[]): Promise<void> {
+    const body = messages.map((message) => JSON.stringify(message)).join('\n')
+    await this.#writeText(path, body ? `${body}\n` : '')
+  }
+
   async #writeJson(path: string, value: unknown): Promise<void> {
+    await this.#writeText(path, `${JSON.stringify(value, null, 2)}\n`)
+  }
+
+  async #writeText(path: string, value: string): Promise<void> {
     await mkdir(dirname(path), { recursive: true })
     const temporaryPath = `${path}.tmp`
-    await writeFile(temporaryPath, `${JSON.stringify(value, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 })
+    await writeFile(temporaryPath, value, { encoding: 'utf8', mode: 0o600 })
     await rename(temporaryPath, path)
   }
 }

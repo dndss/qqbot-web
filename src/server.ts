@@ -133,11 +133,21 @@ async function normalizeMessagePart(
       if (!url) return { type: 'unsupported', label: '[无法读取的图片]' }
       const localUrl = await mediaCache.cacheImage(accountId, url)
       const name = typeof data.name === 'string' ? data.name : undefined
-      return { type: 'image', url, ...(localUrl ? { localUrl } : {}), ...(name ? { name } : {}) }
+      const description = typeof data.description === 'string' && data.description.trim()
+        ? data.description.trim()
+        : undefined
+      return {
+        type: 'image',
+        url,
+        ...(localUrl ? { localUrl } : {}),
+        ...(name ? { name } : {}),
+        ...(description ? { description } : {}),
+      }
     }
     case 'face': {
       const id = String(data.id ?? '')
       const text = typeof data.text === 'string' && data.text.trim() ? data.text.trim() : undefined
+      if (!id && text) return { type: 'text', text }
       return { type: 'face', id, ...(text ? { text } : {}) }
     }
     case 'at': {
@@ -154,7 +164,10 @@ async function normalizeMessagePart(
       const url = messageElementUrl(data)
       const nameValue = data.name ?? data.filename
       const name = typeof nameValue === 'string' && nameValue.trim() ? nameValue.trim() : undefined
-      return { type, ...(url ? { url } : {}), ...(name ? { name } : {}) }
+      const description = typeof data.description === 'string' && data.description.trim()
+        ? data.description.trim()
+        : undefined
+      return { type, ...(url ? { url } : {}), ...(name ? { name } : {}), ...(description ? { description } : {}) }
     }
     case 'markdown': {
       const text = String(data.content ?? '')
@@ -180,12 +193,12 @@ function messagePreview(parts: MessagePart[]): string {
   return parts.map((part) => {
     switch (part.type) {
       case 'text': return part.text
-      case 'image': return '[图片]'
+      case 'image': return part.description || '[图片]'
       case 'face': return part.text || `[表情${part.id ? ` ${part.id}` : ''}]`
       case 'at': return `@${part.name || (part.userId === 'all' ? '所有人' : shortId(part.userId))}`
       case 'reply': return '[回复]'
-      case 'video': return '[视频]'
-      case 'audio': return '[音频]'
+      case 'video': return part.description || '[视频]'
+      case 'audio': return part.description || '[音频]'
       case 'file': return `[文件${part.name ? `：${part.name}` : ''}]`
       case 'forward': return `[${part.title}]`
       case 'unsupported': return part.label
@@ -648,8 +661,6 @@ async function recallMessage(conversation: Conversation, messageId: string): Pro
     : await bot.recallGroupMessage(conversation.targetId, message.id)
   if (!recalled) throw new Error('QQ 接口未确认消息撤回成功')
   const updated = await store.updateMessage(conversation.id, message.id, {
-    content: '[消息已撤回]',
-    parts: [],
     status: 'recalled',
     recalledAt: Date.now(),
   })

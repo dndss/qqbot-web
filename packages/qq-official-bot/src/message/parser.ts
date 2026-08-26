@@ -11,6 +11,23 @@ type NumberedSection = {
     body: string
 }
 
+function decodeBase64Text(value: unknown): string | undefined {
+    if (typeof value !== 'string' || !value) return
+    try {
+        const payload = JSON.parse(Buffer.from(value, 'base64').toString('utf8'))
+        return typeof payload.text === 'string' && payload.text ? payload.text : undefined
+    } catch {
+        return
+    }
+}
+
+function parseInlineAttrs(attrs: string[]) {
+    return Object.fromEntries(attrs.map(attr => {
+        const [key, ...values] = attr.split('=')
+        return [key.toLowerCase(), trimQuote(values.join('='))]
+    }))
+}
+
 function splitNumberedSections(content: string, marker: RegExp): NumberedSection[] | undefined {
     const matches = [...content.matchAll(marker)]
     if (!matches.length || content.slice(0, matches[0].index).trim()) return
@@ -227,8 +244,27 @@ export namespace Message {
         let template = (payload.content || '').trimStart();
         let result: MessageElem[] = []
         let brief: string = ''
-        const hasImageAttachment = Array.isArray(payload.attachments)
-            && payload.attachments.some((attachment: Dict) => attachment.content_type?.startsWith('image/'))
+        const attachments: Dict[] = Array.isArray(payload.attachments) ? payload.attachments : []
+        const consumedAttachmentIndexes = new Set<number>()
+        const hasImageAttachment = attachments
+            .some(attachment => attachment.content_type?.startsWith('image/'))
+        const appendAttachment = (attachment: Dict, description?: string) => {
+            let { content_type, ...data } = attachment
+            if (typeof content_type !== 'string') return false
+            const [category] = content_type.split('/')
+            const type: 'image' | 'video' | 'audio' | 'file' =
+                ['image', 'video', 'audio'].includes(category) ? category as 'image' | 'video' | 'audio' : 'file'
+            if (typeof data.url === 'string' && !data.url.startsWith('http'))
+                data.url = `https://${data.url}`
+            if (data.filename) {
+                data.name = data.filename
+                delete data.filename
+            }
+            if (description) data.description = description
+            result.push({ type, data })
+            brief += `<${type},${Object.entries(data).map(([key, value]) => `${key}=${value}`).join(',')}>`
+            return true
+        }
         // 1. 处理文字表情混排
         const regex = /("[^"]*?"|'[^']*?'|`[^`]*?`|“[^”]*?”|‘[^’]*?’|<[^>]+?>)/;
         if (payload.message_reference) {
@@ -263,7 +299,23 @@ export namespace Message {
             template = template.slice(index + match.length);
             if (match.startsWith('<')) {
                 let [type, ...attrs] = match.slice(1, -1).split(',');
-                if (type.startsWith('faceType')) {
+                if (type.startsWith('attachmentType=')) {
+                    const marker = parseInlineAttrs([type, ...attrs])
+                    const attachmentIndex = Number(marker.attachmentindex)
+                    const attachment = attachments[attachmentIndex]
+                    if (
+                        Number.isInteger(attachmentIndex)
+                        && attachmentIndex >= 0
+                        && typeof marker.attachmenttype === 'string'
+                        && attachment?.content_type === marker.attachmenttype
+                    ) {
+                        if (!consumedAttachmentIndexes.has(attachmentIndex)) {
+                            appendAttachment(attachment, decodeBase64Text(marker.description))
+                            consumedAttachmentIndexes.add(attachmentIndex)
+                        }
+                        continue
+                    }
+                } else if (type.startsWith('faceType')) {
                     // faceType=6 is the placeholder for an image-backed sticker.
                     if (type === 'faceType=6' && hasImageAttachment) continue
                     type = 'face'
@@ -303,15 +355,24 @@ export namespace Message {
                     'ark',
                     'embed'
                 ].includes(type)) {
+                    const data = parseInlineAttrs(attrs)
+                    if (type === 'face') {
+                        const text = decodeBase64Text(data.ext)
+                        if (text) {
+                            if (!data.id) {
+                                result.push({ type: 'text', data: { text } })
+                                brief += text
+                                continue
+                            }
+                            delete data.ext
+                            data.text = text
+                        }
+                    }
                     result.push({
                         type,
-                        data:Object.fromEntries(attrs.map((attr: string) => {
-                            const [key, ...values] = attr.split('=')
-                            return [key.toLowerCase(), trimQuote(values.join('='))]
-                        })
-                    )
+                        data
                     })
-                    brief += `<${type},${attrs.join(',')}>`
+                    brief += type === 'face' && data.text ? data.text : `<${type},${attrs.join(',')}>`
                 } else {
                     result.push({
                         type: 'text',
@@ -334,22 +395,8 @@ export namespace Message {
             brief += template
         }
         // 2. 将附件添加到消息中
-        if (payload.attachments) {
-            for (const attachment of payload.attachments) {
-                let { content_type, ...data } = attachment
-                const [type] = content_type.split('/')
-                if (!data.url.startsWith('http'))
-                    data.url = `https://${data.url}`
-                if (data.filename) {
-                    data.name = data.filename
-                    delete data.filename
-                }
-                result.push({
-                    type,
-                    data,
-                })
-                brief += `<${type},${Object.entries(data).map(([key, value]) => `${key}=${value}`).join(',')}>`
-            }
+        for (let index = 0; index < attachments.length; index++) {
+            if (!consumedAttachmentIndexes.has(index)) appendAttachment(attachments[index])
         }
         delete payload.attachments
         return [result, brief]

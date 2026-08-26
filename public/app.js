@@ -208,7 +208,8 @@ function renderMessagePart(container, part) {
       const image = document.createElement('img')
       image.className = 'message-image'
       image.src = initialUrl
-      image.alt = part.name || '消息图片'
+      image.alt = part.description || part.name || '消息图片'
+      if (part.description) image.title = part.description
       image.loading = 'lazy'
       image.decoding = 'async'
       image.referrerPolicy = 'no-referrer'
