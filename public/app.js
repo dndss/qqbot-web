@@ -11,7 +11,6 @@ const state = {
   status: { state: 'disconnected', error: '', selfId: null },
   query: '',
   replyTarget: null,
-  mentions: [],
   composerFormat: 'text',
   pendingMediaType: null,
   pendingMediaSource: null,
@@ -409,7 +408,6 @@ function renderSendOptions(mentionLocked) {
 
 function resetComposer(clearText = false) {
   state.replyTarget = null
-  state.mentions = []
   if (clearText) {
     elements.messageInput.value = ''
     elements.messageInput.style.height = 'auto'
@@ -421,9 +419,7 @@ function resetComposer(clearText = false) {
 }
 
 function updateComposerMode() {
-  const activeMentions = state.mentions.filter((mention) => elements.messageInput.value.includes(mention.token))
-  state.mentions = activeMentions
-  const mentionLocked = activeMentions.length > 0
+  const mentionLocked = /<qqbot-at-user\b[^>]*\bid\s*=\s*["'][^"']+["'][^>]*\/?>/i.test(elements.messageInput.value)
   if (mentionLocked) state.composerFormat = 'markdown'
   const type = effectiveMessageType()
   elements.messageType.value = type
@@ -517,7 +513,7 @@ function insertMention(message) {
   if (conversation?.type !== 'group' || message.direction !== 'incoming' || !message.senderOpenid) {
     throw new Error('该消息没有可用的群成员 OpenID')
   }
-  const token = `@${message.senderName}`
+  const token = `<qqbot-at-user id="${message.senderOpenid}" />`
   const input = elements.messageInput
   const start = input.selectionStart ?? input.value.length
   const end = input.selectionEnd ?? start
@@ -528,7 +524,6 @@ function insertMention(message) {
   const inserted = `${prefix}${token}${suffix}`
   if (before.length + inserted.length + after.length > input.maxLength) throw new Error('输入内容已达到长度限制')
   input.value = `${before}${inserted}${after}`
-  state.mentions.push({ messageId: message.id, token })
   if (state.pendingMediaType) {
     clearAttachmentFields()
     showToast('已切换为 Markdown；本地图片请改用 Markdown 图片 URL')
@@ -1439,7 +1434,6 @@ elements.composer.addEventListener('submit', async (event) => {
           ...(state.replyTarget ? {
             reply: { messageId: state.replyTarget.messageId, quote: state.replyTarget.quote },
           } : {}),
-          mentions: state.mentions.filter((mention) => content.includes(mention.token)),
         }),
       })
     } else if (type === 'text') {

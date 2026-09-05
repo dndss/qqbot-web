@@ -485,7 +485,6 @@ interface SendMessageInput {
     local?: boolean
   }
   reply?: { messageId: string; quote: boolean }
-  mentions?: Array<{ messageId: string; token: string }>
 }
 
 type MediaMessageType = NonNullable<SendMessageInput['media']>['type']
@@ -562,23 +561,6 @@ async function receiveMediaUpload(request: IncomingMessage, type: MediaMessageTy
   }
 }
 
-function markdownContent(conversation: Conversation, input: SendMessageInput): string {
-  let content = input.content.replace(/@/g, '@\u200b').replace(/<qqbot-/g, '<qqbot-\u200b')
-  if (conversation.type !== 'group') return content
-  for (const mention of input.mentions ?? []) {
-    const target = store.getMessage(conversation.id, mention.messageId)
-    if (!target?.senderOpenid || target.direction !== 'incoming') continue
-    const token = mention.token.trim()
-    if (!token) continue
-    const escapedToken = token.replace(/@/g, '@\u200b').replace(/<qqbot-/g, '<qqbot-\u200b')
-    const index = content.indexOf(escapedToken)
-    if (index < 0) continue
-    const tag = `<qqbot-at-user id="${target.senderOpenid}" />`
-    content = `${content.slice(0, index)}${tag}${content.slice(index + escapedToken.length)}`
-  }
-  return content
-}
-
 async function sendMessage(conversation: Conversation, input: SendMessageInput): Promise<StoredMessage> {
   if (!bot || connectionState !== 'connected') throw new Error('机器人尚未连接')
   const replyTarget = input.reply ? store.getMessage(conversation.id, input.reply.messageId) : undefined
@@ -586,7 +568,7 @@ async function sendMessage(conversation: Conversation, input: SendMessageInput):
   if (input.reply?.quote && !replyTarget?.msgIdx) throw new Error('该消息没有引用索引，无法引用回复')
   const source = replyTarget ? { id: replyTarget.id, msg_idx: replyTarget.msgIdx } : undefined
   const sendable = input.type === 'markdown'
-    ? segment.markdown(markdownContent(conversation, input))
+    ? segment.markdown(input.content)
     : [
         ...(input.content ? [segment.text(input.content)] : []),
         ...(input.media ? [segment[input.media.type](
@@ -875,15 +857,6 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
         ? replyValue as Record<string, unknown>
         : undefined
       const replyMessageId = String(replyRecord?.messageId ?? '').trim()
-      const mentions = Array.isArray(payload.mentions)
-        ? payload.mentions.slice(0, 20).flatMap((value) => {
-          if (!value || typeof value !== 'object' || Array.isArray(value)) return []
-          const record = value as Record<string, unknown>
-          const messageId = String(record.messageId ?? '').trim()
-          const token = String(record.token ?? '').trim()
-          return messageId && token ? [{ messageId, token }] : []
-        })
-        : []
       let media: SendMessageInput['media']
       if (isMediaMessageType(messageType)) {
         const source = validateMediaUrl(messageType, content)
@@ -900,7 +873,6 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
         content: isMediaMessageType(messageType) ? '' : content,
         ...(media ? { media } : {}),
         ...(replyMessageId ? { reply: { messageId: replyMessageId, quote: replyRecord?.quote === true } } : {}),
-        ...(messageType === 'markdown' && mentions.length ? { mentions } : {}),
       }))
       return true
     }
