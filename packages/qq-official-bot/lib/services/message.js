@@ -145,9 +145,11 @@ class MessageService {
      * 核心发送消息方法
      */
     async sendMessage(endpointPath, message, source, options = {}) {
+        options.signal?.throwIfAborted();
         // 构建消息
         const messageBuilder = new message_1.MessageBuilder(this.appid, !endpointPath.startsWith('/v2'), source, options.quote);
         const buildResult = await messageBuilder.build(message);
+        options.signal?.throwIfAborted();
         const replyMessageId = buildResult.messagePayload.msg_id;
         let replySequence;
         if (replyMessageId) {
@@ -157,7 +159,7 @@ class MessageService {
         try {
             // 处理文件发送
             if (buildResult.isFile) {
-                const uploaded = await this.uploadFile(endpointPath, buildResult);
+                const uploaded = await this.uploadFile(endpointPath, buildResult, options);
                 buildResult.messagePayload.media = { file_info: uploaded.file_info };
             }
             try {
@@ -170,6 +172,7 @@ class MessageService {
                 while (replyMessageId &&
                     replySequence !== undefined &&
                     replySequence < MAX_REPLY_SEQUENCE &&
+                    !options.signal?.aborted &&
                     this.getOpenApiErrorCode(error) === REPLY_SEQUENCE_DUPLICATED) {
                     replySequence += 1;
                     this.advanceReplySequence(replyMessageId, replySequence);
@@ -185,7 +188,8 @@ class MessageService {
                 const isExpiredReply = this.getOpenApiErrorCode(error) === REPLY_MESSAGE_EXPIRED;
                 // 引用回复被动发送失败，或 msg_id 已过期时，移除被动回复凭据后转主动发送。
                 // message_reference 会被保留，因此引用回复仍显示原引用。
-                if (replyMessageId && (isQuotedReply || isExpiredReply)) {
+                if (replyMessageId && options.fallbackToActive !== false &&
+                    !options.signal?.aborted && (isQuotedReply || isExpiredReply)) {
                     if (replySequence !== undefined)
                         this.releaseReplySequence(replyMessageId, replySequence);
                     replySequence = undefined;
@@ -205,20 +209,21 @@ class MessageService {
     /**
      * 上传文件
      */
-    async uploadFile(endpointPath, buildResult) {
+    async uploadFile(endpointPath, buildResult, options) {
         const { local_path, ...payload } = buildResult.filePayload;
         if (local_path) {
             if (!payload.file_type)
                 throw new Error('Missing file_type for chunked upload');
             const uploader = new message_1.ChunkedUploader(this.request);
             return uploader.upload(endpointPath, local_path, payload.file_type, {
-                fileName: payload.file_name
+                fileName: payload.file_name,
+                signal: options.signal
             });
         }
         const { data: result } = await this.request.post(endpointPath + '/files', {
             ...payload,
             srv_send_msg: false
-        });
+        }, { timeout: options.timeout, signal: options.signal });
         return result;
     }
     /**
@@ -229,7 +234,8 @@ class MessageService {
             headers: {
                 'Content-Type': buildResult.contentType
             },
-            timeout: options.timeout || 10000
+            timeout: options.timeout ?? 10000,
+            signal: options.signal
         });
         if (this.isAuditResult(result)) {
             // 如果是审核结果，返回审核信息

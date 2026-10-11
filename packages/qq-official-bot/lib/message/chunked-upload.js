@@ -38,6 +38,7 @@ const node_crypto_1 = require("node:crypto");
 const node_fs_1 = require("node:fs");
 const promises_1 = require("node:fs/promises");
 const path = __importStar(require("node:path"));
+const promises_2 = require("node:timers/promises");
 const MD5_10M_SIZE = 10002432;
 const DEFAULT_CONCURRENT_PARTS = 1;
 const MAX_CONCURRENT_PARTS = 10;
@@ -63,12 +64,13 @@ class ChunkedUploader {
         this.request = request;
     }
     async upload(endpointPath, filePath, fileType, options = {}) {
+        options.signal?.throwIfAborted();
         const fileStat = await (0, promises_1.stat)(filePath);
         if (!fileStat.isFile())
             throw new Error(`Invalid upload file: ${filePath}`);
         const fileSize = fileStat.size;
         const fileName = sanitizeFileName(options.fileName || path.basename(filePath));
-        const hashes = await computeFileHashes(filePath, fileSize);
+        const hashes = await computeFileHashes(filePath, fileSize, options.signal);
         let prepared;
         try {
             const { data } = await this.request.post(`${endpointPath}/upload_prepare`, {
@@ -76,7 +78,7 @@ class ChunkedUploader {
                 file_name: fileName,
                 file_size: fileSize,
                 ...hashes
-            }, { timeout: REQUEST_TIMEOUT });
+            }, { timeout: REQUEST_TIMEOUT, signal: options.signal });
             prepared = data;
         }
         catch (error) {
@@ -97,6 +99,7 @@ class ChunkedUploader {
         let completedParts = 0;
         let uploadedBytes = 0;
         const tasks = prepared.parts.map(part => async () => {
+            options.signal?.throwIfAborted();
             const partIndex = Number(part.index);
             const offset = (partIndex - 1) * blockSize;
             const partSize = Number(part.block_size) || blockSize;
@@ -106,8 +109,8 @@ class ChunkedUploader {
             }
             const chunk = await readFileChunk(filePath, offset, length);
             const md5 = (0, node_crypto_1.createHash)('md5').update(chunk).digest('hex');
-            await putToPresignedUrl(part.presigned_url, chunk);
-            await this.finishPart(endpointPath, prepared.upload_id, partIndex, chunk.length, md5, retryTimeout);
+            await putToPresignedUrl(part.presigned_url, chunk, options.signal);
+            await this.finishPart(endpointPath, prepared.upload_id, partIndex, chunk.length, md5, retryTimeout, options.signal);
             completedParts++;
             uploadedBytes += chunk.length;
             options.onProgress?.({
@@ -118,9 +121,9 @@ class ChunkedUploader {
             });
         });
         await runWithConcurrency(tasks, concurrency);
-        return this.completeUpload(endpointPath, prepared.upload_id);
+        return this.completeUpload(endpointPath, prepared.upload_id, options.signal);
     }
-    async finishPart(endpointPath, uploadId, partIndex, blockSize, md5, retryTimeout) {
+    async finishPart(endpointPath, uploadId, partIndex, blockSize, md5, retryTimeout, signal) {
         const body = {
             upload_id: uploadId,
             part_index: partIndex,
@@ -130,37 +133,42 @@ class ChunkedUploader {
         const startedAt = Date.now();
         let normalAttempts = 0;
         while (true) {
+            signal?.throwIfAborted();
             try {
                 await this.request.post(`${endpointPath}/upload_part_finish`, body, {
-                    timeout: REQUEST_TIMEOUT
+                    timeout: REQUEST_TIMEOUT,
+                    signal
                 });
                 return;
             }
             catch (error) {
+                signal?.throwIfAborted();
                 if (getErrorCode(error) === PART_FINISH_RETRYABLE_CODE) {
                     if (Date.now() - startedAt >= retryTimeout)
                         throw error;
-                    await delay(1000);
+                    await delay(1000, signal);
                     continue;
                 }
                 if (normalAttempts >= PART_FINISH_MAX_RETRIES)
                     throw error;
-                await delay(1000 * Math.pow(2, normalAttempts));
+                await delay(1000 * Math.pow(2, normalAttempts), signal);
                 normalAttempts++;
             }
         }
     }
-    async completeUpload(endpointPath, uploadId) {
+    async completeUpload(endpointPath, uploadId, signal) {
         let lastError;
         for (let attempt = 0; attempt <= COMPLETE_UPLOAD_MAX_RETRIES; attempt++) {
+            signal?.throwIfAborted();
             try {
-                const { data } = await this.request.post(`${endpointPath}/files`, { upload_id: uploadId }, { timeout: REQUEST_TIMEOUT });
+                const { data } = await this.request.post(`${endpointPath}/files`, { upload_id: uploadId }, { timeout: REQUEST_TIMEOUT, signal });
                 return data;
             }
             catch (error) {
+                signal?.throwIfAborted();
                 lastError = error;
                 if (attempt < COMPLETE_UPLOAD_MAX_RETRIES) {
-                    await delay(2000 * Math.pow(2, attempt));
+                    await delay(2000 * Math.pow(2, attempt), signal);
                 }
             }
         }
@@ -168,14 +176,14 @@ class ChunkedUploader {
     }
 }
 exports.ChunkedUploader = ChunkedUploader;
-async function computeFileHashes(filePath, fileSize) {
+async function computeFileHashes(filePath, fileSize, signal) {
     return new Promise((resolve, reject) => {
         const md5 = (0, node_crypto_1.createHash)('md5');
         const sha1 = (0, node_crypto_1.createHash)('sha1');
         const md5First10m = (0, node_crypto_1.createHash)('md5');
         const needsPartialHash = fileSize > MD5_10M_SIZE;
         let processed = 0;
-        const stream = (0, node_fs_1.createReadStream)(filePath);
+        const stream = (0, node_fs_1.createReadStream)(filePath, { signal });
         stream.on('data', chunk => {
             const buffer = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
             md5.update(buffer);
@@ -211,9 +219,10 @@ async function readFileChunk(filePath, offset, length) {
         await handle.close();
     }
 }
-async function putToPresignedUrl(url, data) {
+async function putToPresignedUrl(url, data, signal) {
     let lastError;
     for (let attempt = 0; attempt <= PART_UPLOAD_MAX_RETRIES; attempt++) {
+        signal?.throwIfAborted();
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), PART_UPLOAD_TIMEOUT);
         try {
@@ -222,7 +231,7 @@ async function putToPresignedUrl(url, data) {
                 method: 'PUT',
                 body: new Blob([arrayBuffer]),
                 headers: { 'Content-Length': String(data.length) },
-                signal: controller.signal
+                signal: signal ? AbortSignal.any([signal, controller.signal]) : controller.signal
             });
             if (!response.ok) {
                 const body = await response.text().catch(() => '');
@@ -231,9 +240,10 @@ async function putToPresignedUrl(url, data) {
             return;
         }
         catch (error) {
+            signal?.throwIfAborted();
             lastError = error;
             if (attempt < PART_UPLOAD_MAX_RETRIES) {
-                await delay(1000 * Math.pow(2, attempt));
+                await delay(1000 * Math.pow(2, attempt), signal);
             }
         }
         finally {
@@ -264,6 +274,6 @@ function getErrorMessage(error) {
 function clamp(value, min, max) {
     return Math.min(Math.max(value, min), max);
 }
-function delay(ms) {
-    return new Promise(resolve => setTimeout(resolve, ms));
+async function delay(ms, signal) {
+    await (0, promises_2.setTimeout)(ms, undefined, { signal });
 }
