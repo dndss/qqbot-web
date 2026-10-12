@@ -7,6 +7,9 @@ const state = {
   messagesCursor: null,
   loadingOlderMessages: false,
   messageLoadToken: 0,
+  referenceNavigationToken: 0,
+  locatingReference: false,
+  highlightedMessageId: null,
   followLatestMessage: true,
   status: { state: 'disconnected', error: '', selfId: null },
   query: '',
@@ -305,7 +308,7 @@ function renderMessageContent(container, message) {
   }
   container.classList.add('has-rich-content')
   for (const part of message.parts) {
-    if (part.type === 'reply' && message.refMsgIdx) continue
+    if (part.type === 'reply' && (message.refMsgIdx || part.messageId)) continue
     renderMessagePart(container, part)
   }
 }
@@ -326,6 +329,13 @@ function closeContextMenu() {
 }
 
 function showContextMenu(event, actions, anchor) {
+  // 移动端只允许主动点击打开，长按仍使用浏览器的系统菜单。
+  if (event.type === 'contextmenu' && (
+    event.pointerType === 'touch' || window.matchMedia('(max-width: 760px), (pointer: coarse)').matches
+  )) {
+    closeContextMenu()
+    return
+  }
   event.preventDefault()
   event.stopPropagation()
   elements.contextMenu.replaceChildren()
@@ -339,6 +349,7 @@ function showContextMenu(event, actions, anchor) {
     const button = document.createElement('button')
     button.type = 'button'
     button.textContent = action.label
+    button.disabled = action.disabled === true
     if (action.danger) button.classList.add('danger')
     button.addEventListener('click', async () => {
       closeContextMenu()
@@ -357,7 +368,52 @@ function showContextMenu(event, actions, anchor) {
   const targetY = anchorRect ? anchorRect.bottom + 4 : event.clientY
   elements.contextMenu.style.left = `${Math.max(6, Math.min(targetX, window.innerWidth - rect.width - 6))}px`
   elements.contextMenu.style.top = `${Math.max(6, Math.min(targetY, window.innerHeight - rect.height - 6))}px`
-  elements.contextMenu.querySelector('button')?.focus()
+  elements.contextMenu.querySelector('button:not(:disabled)')?.focus({ preventScroll: true })
+}
+
+function selectedMessageText(row) {
+  const selection = window.getSelection()
+  if (!row || !selection || selection.isCollapsed || !selection.rangeCount) return ''
+  const text = selection.toString()
+  if (!text.trim()) return ''
+  for (let index = 0; index < selection.rangeCount; index += 1) {
+    if (selection.getRangeAt(index).intersectsNode(row)) return text
+  }
+  return ''
+}
+
+async function copyMessageText(text) {
+  if (!text) throw new Error('没有可复制的内容')
+  try {
+    if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
+    await navigator.clipboard.writeText(text)
+  } catch {
+    // 非安全上下文（例如局域网 HTTP）回退到用户点击触发的复制命令。
+    const previousFocus = document.activeElement
+    const selection = window.getSelection()
+    const ranges = selection ? Array.from({ length: selection.rangeCount }, (_, index) => selection.getRangeAt(index).cloneRange()) : []
+    const textarea = document.createElement('textarea')
+    textarea.value = text
+    textarea.readOnly = true
+    textarea.className = 'clipboard-copy-buffer'
+    document.body.append(textarea)
+    let copied = false
+    try {
+      textarea.focus({ preventScroll: true })
+      textarea.select()
+      textarea.setSelectionRange(0, text.length)
+      copied = document.execCommand('copy')
+    } finally {
+      textarea.remove()
+      previousFocus?.focus({ preventScroll: true })
+      if (selection) {
+        selection.removeAllRanges()
+        for (const range of ranges) selection.addRange(range)
+      }
+    }
+    if (!copied) throw new Error('复制失败，请检查浏览器剪贴板权限')
+  }
+  showToast('已复制')
 }
 
 function renderReplyPreview() {
@@ -558,12 +614,19 @@ async function muteFromMenu(message, durationMinutes) {
   showToast(result.mutedUntil ? `已禁言至 ${formatDateTime(result.mutedUntil)}` : '已解除禁言')
 }
 
-function openMessageMenu(event, message, anchor) {
+function openMessageMenu(event, message, anchor, selectedTextBeforeMenu) {
+  const row = (anchor || event.currentTarget)?.closest('.message-row')
+  // 打开菜单后焦点可能改变选区，必须提前保留选中的文本。
+  const selectedText = selectedTextBeforeMenu ?? selectedMessageText(row)
+  const actions = [
+    { label: '复制选中', disabled: !selectedText, run: () => copyMessageText(selectedText) },
+    { label: '复制整条消息', run: () => copyMessageText(message.status === 'recalled' ? '[消息已撤回]' : message.content) },
+  ]
   if (message.uploadState && message.uploadState !== 'success') {
-    closeContextMenu()
+    showContextMenu(event, actions, anchor)
     return
   }
-  const actions = []
+  if (message.status !== 'recalled') actions.push(null)
   const conversation = state.conversations.find((item) => item.id === message.conversationId)
   const targetIsManager = (message.roles || []).some((role) => role === 'owner' || role === 'admin')
   const botCanManage = ['owner', 'admin'].includes(conversation?.botState?.memberRole)
@@ -673,6 +736,10 @@ function applyAccountSnapshot(snapshot) {
   state.messagesCursor = null
   state.loadingOlderMessages = false
   state.messageLoadToken += 1
+  state.referenceNavigationToken += 1
+  state.locatingReference = false
+  state.highlightedMessageId = null
+  clearTimeout(focusReferencedMessage.timer)
   setMobileDetailOpen(false)
   if (history.state?.mobileDetailOpen) history.replaceState({ ...history.state, mobileDetailOpen: false }, '')
   resetComposer(true)
@@ -740,7 +807,85 @@ function updateMessageHistoryStatus() {
   status.classList.toggle('loading', state.loadingOlderMessages)
 }
 
+function messageReferenceIndexes() {
+  return {
+    byId: new Map(state.messages.map((message) => [message.id, message])),
+    byIdx: new Map(state.messages.filter((message) => message.msgIdx).map((message) => [message.msgIdx, message])),
+  }
+}
+
+function findReferencedMessage(message, indexes = messageReferenceIndexes()) {
+  const replyId = message.parts?.find((part) => part.type === 'reply' && part.messageId)?.messageId
+  const target = message.refMsgIdx
+    ? indexes.byIdx.get(message.refMsgIdx)
+    : indexes.byIdx.get(replyId) || indexes.byId.get(replyId)
+  return target?.id !== message.id ? target : undefined
+}
+
+function focusReferencedMessage(messageId) {
+  const row = [...elements.messageList.querySelectorAll('.message-row')]
+    .find((item) => item.dataset.messageId === messageId)
+  if (!row) return
+  state.followLatestMessage = false
+  state.highlightedMessageId = messageId
+  elements.messageList.querySelectorAll('.message-highlighted')
+    .forEach((item) => item.classList.remove('message-highlighted'))
+  row.classList.add('message-highlighted')
+  row.tabIndex = -1
+  row.focus({ preventScroll: true })
+  const list = elements.messageList
+  const top = list.scrollTop + row.getBoundingClientRect().top - list.getBoundingClientRect().top
+  list.scrollTo({ top: Math.max(0, top - (list.clientHeight - row.clientHeight) / 2), behavior: 'instant' })
+  clearTimeout(focusReferencedMessage.timer)
+  focusReferencedMessage.timer = setTimeout(() => {
+    state.highlightedMessageId = null
+    elements.messageList.querySelectorAll('.message-highlighted')
+      .forEach((item) => item.classList.remove('message-highlighted'))
+  }, 2400)
+}
+
+async function locateReferencedMessage(message, preview) {
+  const conversationId = state.selectedId
+  if (message.conversationId !== conversationId) return
+  const navigationToken = ++state.referenceNavigationToken
+  const loadToken = state.messageLoadToken
+  const isCurrent = () => state.selectedId === conversationId
+    && state.messageLoadToken === loadToken && state.referenceNavigationToken === navigationToken
+  const loaded = findReferencedMessage(message)
+  if (loaded) {
+    state.locatingReference = false
+    focusReferencedMessage(loaded.id)
+    return
+  }
+  state.locatingReference = true
+  preview.disabled = true
+  preview.setAttribute('aria-busy', 'true')
+  try {
+    const params = new URLSearchParams()
+    if (state.messagesCursor) params.set('before', state.messagesCursor)
+    const page = await api(`/api/conversations/${encodeURIComponent(conversationId)}/messages/${encodeURIComponent(message.id)}/reference?${params}`)
+    if (!isCurrent()) return
+    // 失效正在进行的旧分页请求，防止它覆盖定位后更新的历史游标。
+    state.messageLoadToken += 1
+    const existingIds = new Set(state.messages.map((item) => item.id))
+    state.messages = [...page.messages.filter((item) => !existingIds.has(item.id)), ...state.messages]
+    state.messagesHasMore = page.hasMore
+    state.messagesCursor = page.nextCursor
+    state.loadingOlderMessages = false
+    state.highlightedMessageId = page.messageId
+    renderMessages({ stickToBottom: false, scrollToMessageId: page.messageId })
+  } catch (error) {
+    if (isCurrent()) showToast(error.message, true)
+  } finally {
+    if (state.referenceNavigationToken === navigationToken) state.locatingReference = false
+    preview.disabled = false
+    preview.removeAttribute('aria-busy')
+  }
+}
+
 function renderMessages(options = {}) {
+  const loadToken = state.messageLoadToken
+  const referenceIndexes = messageReferenceIndexes()
   const previousScrollTop = options.previousScrollTop ?? elements.messageList.scrollTop
   const previousScrollHeight = options.previousScrollHeight ?? elements.messageList.scrollHeight
   if (typeof options.stickToBottom === 'boolean') state.followLatestMessage = options.stickToBottom
@@ -763,6 +908,7 @@ function renderMessages(options = {}) {
     }
     const row = document.createElement('div')
     row.className = `message-row ${message.direction}`
+    if (message.id === state.highlightedMessageId) row.classList.add('message-highlighted')
     row.dataset.messageId = message.id
     const avatar = document.createElement('span')
     avatar.className = 'message-avatar'
@@ -789,21 +935,36 @@ function renderMessages(options = {}) {
     moreButton.type = 'button'
     moreButton.className = 'message-more-button'
     moreButton.setAttribute('aria-label', `操作 ${message.senderName} 的消息`)
+    moreButton.title = '消息操作'
     moreButton.textContent = '…'
-    moreButton.addEventListener('click', (event) => openMessageMenu(event, message, moreButton))
+    let selectedTextBeforeMenu
+    moreButton.addEventListener('pointerdown', () => {
+      selectedTextBeforeMenu = selectedMessageText(row)
+    })
+    moreButton.addEventListener('pointercancel', () => { selectedTextBeforeMenu = undefined })
+    moreButton.addEventListener('click', (event) => {
+      const selectedText = event.detail ? selectedTextBeforeMenu : undefined
+      selectedTextBeforeMenu = undefined
+      openMessageMenu(event, message, moreButton, selectedText)
+    })
     meta.append(moreButton)
     const bubble = document.createElement('div')
     bubble.className = 'message-bubble'
     renderMessageContent(bubble, message)
     bubble.addEventListener('contextmenu', (event) => openMessageMenu(event, message))
     stack.append(meta)
-    if (message.refMsgIdx) {
-      const quoted = state.messages.find((item) => item.msgIdx === message.refMsgIdx)
-      const preview = document.createElement('div')
+    const replyId = message.parts?.find((part) => part.type === 'reply' && part.messageId)?.messageId
+    if ((message.refMsgIdx || replyId) && message.status !== 'recalled') {
+      const quoted = findReferencedMessage(message, referenceIndexes) || message.reference
+      const preview = document.createElement('button')
+      preview.type = 'button'
       preview.className = 'message-quote-preview'
       preview.textContent = quoted
-        ? `${quoted.senderName}：${quoted.content}`
-        : `引用消息索引：${message.refMsgIdx}`
+        ? `${quoted.senderName}：${quoted.status === 'recalled' ? '[消息已撤回]' : quoted.content}`
+        : '引用消息'
+      preview.title = '定位原消息'
+      preview.setAttribute('aria-label', `定位原消息：${preview.textContent}`)
+      preview.addEventListener('click', () => void locateReferencedMessage(message, preview))
       stack.append(preview)
     }
     stack.append(bubble)
@@ -819,7 +980,10 @@ function renderMessages(options = {}) {
     elements.messageList.append(row)
   }
   requestAnimationFrame(() => {
-    if (options.stickToBottom) {
+    if (state.messageLoadToken !== loadToken) return
+    if (options.scrollToMessageId) {
+      focusReferencedMessage(options.scrollToMessageId)
+    } else if (options.stickToBottom) {
       elements.messageList.scrollTop = elements.messageList.scrollHeight
     } else if (options.preservePrepend) {
       elements.messageList.scrollTop = previousScrollTop + elements.messageList.scrollHeight - previousScrollHeight
@@ -1000,6 +1164,10 @@ async function selectConversation(id) {
   state.messagesHasMore = false
   state.messagesCursor = null
   state.loadingOlderMessages = false
+  state.referenceNavigationToken += 1
+  state.locatingReference = false
+  state.highlightedMessageId = null
+  clearTimeout(focusReferencedMessage.timer)
   const page = await api(`/api/conversations/${encodeURIComponent(id)}/messages?limit=200`)
   if (state.selectedId !== id || state.messageLoadToken !== loadToken) return
   state.messages = mergeUploadMessages(id, page.messages)
@@ -1019,7 +1187,7 @@ async function selectConversation(id) {
 }
 
 async function loadOlderMessages() {
-  if (!state.selectedId || !state.messagesHasMore || !state.messagesCursor || state.loadingOlderMessages) return
+  if (!state.selectedId || !state.messagesHasMore || !state.messagesCursor || state.loadingOlderMessages || state.locatingReference) return
   const conversationId = state.selectedId
   const loadToken = state.messageLoadToken
   state.loadingOlderMessages = true

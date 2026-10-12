@@ -14,6 +14,10 @@ import type {
 
 const EMPTY_DATABASE: Database = { conversations: [], messages: [] }
 const EMPTY_REGISTRY: AccountRegistry = { selectedAccountId: null, accounts: [] }
+type MessageIndexes = {
+  byId: Map<string, StoredMessage>
+  byIdx: Map<string, StoredMessage>
+}
 const MESSAGE_DATE_FORMATTER = new Intl.DateTimeFormat('en-CA', {
   timeZone: 'Asia/Shanghai',
   year: 'numeric',
@@ -156,11 +160,53 @@ export class JsonStore {
     )
   }
 
+  getMessageReference(conversationId: string, messageId: string): StoredMessage | undefined {
+    const source = this.getMessage(conversationId, messageId)
+    if (!source) return undefined
+    const messages = this.#database.messages.filter((message) => message.conversationId === conversationId)
+    return this.#resolveReference(source, this.#referenceIndexes(messages))
+  }
+
+  withMessageReference(message: StoredMessage): StoredMessage {
+    return this.#withReference(message, this.getMessageReference(message.conversationId, message.id))
+  }
+
+  #referenceIndexes(messages: StoredMessage[]): MessageIndexes {
+    return {
+      byId: new Map(messages.map((message) => [message.id, message])),
+      byIdx: new Map(messages.filter((message) => message.msgIdx).map((message) => [message.msgIdx!, message])),
+    }
+  }
+
+  #resolveReference(source: StoredMessage, indexes: MessageIndexes): StoredMessage | undefined {
+    const reply = source.parts?.find((part) => part.type === 'reply' && part.messageId)
+    // SDK reply 段通常携带引用索引，旧记录也可能直接携带消息 ID。
+    const target = source.refMsgIdx
+      ? indexes.byIdx.get(source.refMsgIdx)
+      : reply?.type === 'reply'
+        ? indexes.byIdx.get(reply.messageId) ?? indexes.byId.get(reply.messageId)
+        : undefined
+    return target?.id !== source.id ? target : undefined
+  }
+
+  #withReference(message: StoredMessage, target?: StoredMessage): StoredMessage {
+    if (!target) return message
+    return {
+      ...message,
+      reference: {
+        id: target.id,
+        senderName: target.senderName,
+        content: target.content,
+        status: target.status,
+      },
+    }
+  }
+
   listMessages(conversationId: string, limit = 200): StoredMessage[] {
     return this.listMessagesPage(conversationId, limit).messages
   }
 
-  listMessagesPage(conversationId: string, limit = 200, before?: string): MessagePage {
+  listMessagesPage(conversationId: string, limit = 200, before?: string, through?: string): MessagePage {
     const messages = this.#database.messages.filter((message) => message.conversationId === conversationId)
     let end = messages.length
     if (before) {
@@ -168,11 +214,17 @@ export class JsonStore {
       if (end < 0) throw new Error('消息分页游标已失效，请重新打开会话')
     }
     const pageSize = Math.min(Math.max(Number.isInteger(limit) ? limit : 200, 1), 200)
-    const start = Math.max(0, end - pageSize)
+    let start = Math.max(0, end - pageSize)
+    if (through) {
+      const targetIndex = messages.findIndex((message) => message.id === through)
+      if (targetIndex < 0) throw new Error('原消息未保存在当前会话中')
+      start = Math.min(start, Math.max(0, targetIndex - 20))
+    }
     const page = messages.slice(start, end)
+    const indexes = this.#referenceIndexes(messages)
     const hasMore = start > 0
     return {
-      messages: page,
+      messages: page.map((message) => this.#withReference(message, this.#resolveReference(message, indexes))),
       hasMore,
       nextCursor: hasMore ? page[0]?.id ?? null : null,
     }

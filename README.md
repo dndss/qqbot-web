@@ -10,6 +10,9 @@
 - 向已有会话发送普通文本、Raw Markdown、图片、视频、语音和普通文件；普通消息支持文本与一张图片组合发送
 - 媒体消息支持公网 HTTP/HTTPS 地址或直接选择本地文件；本地上传完成或失败后自动清理临时文件
 - 右键消息可撤回 Bot 消息、引用回复或不引用回复；被动回复使用顺序 `msg_seq`
+- 点击引用预览可定位并高亮当前会话中的原消息，未加载的历史会自动补齐；原消息未保存时显示提示
+- 消息右键菜单支持复制选中文字或整条消息正文
+- 手机和平板只通过主动点击消息旁的“…”打开操作菜单；长按消息或头像不弹出自定义右键菜单，保留系统文字选择，点击菜单时保留选区
 - 右键群成员头像可将 `<qqbot-at-user id="openid" />` 直接填入输入框，并自动切换、锁定为 Markdown；删除标签后自动解除锁定
 - 插入有效 @ 后输入区会自动切换并锁定为 Markdown；Markdown 图片可使用 `![#宽 #高](url)` 语法
 - 右键群成员头像可按预设或自定义时长禁言，也可解除禁言
@@ -45,6 +48,16 @@ pnpm start
 ```powershell
 pnpm dev
 ```
+
+引用定位测试：
+
+```powershell
+pnpm test
+```
+
+浏览器回归脚本为 `tests/message-reference.browser.mjs`，需要可用的 Playwright。
+可通过 `PLAYWRIGHT_MODULE` 指定其模块入口，运行 `node tests/message-reference.browser.mjs`；
+脚本使用隔离测试数据，不连接 QQ，桌面和手机截图保存在 `data/test-results/reference/`。
 
 ## 内置 SDK
 

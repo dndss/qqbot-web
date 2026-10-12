@@ -114,8 +114,14 @@ button { cursor: pointer; }
 .message-upload-status.uploading::before { animation: pulse 1s infinite; }
 .message-upload-status.success { color: #23966b; }
 .message-upload-status.failed { max-width: min(420px, 62vw); color: #d04457; text-align: right; overflow-wrap: anywhere; }
-.message-quote-preview { max-width: 100%; padding: 6px 9px; overflow: hidden; border-left: 3px solid #9fc5e8; border-radius: 5px; color: #6f7e91; background: rgba(233,240,247,.85); text-overflow: ellipsis; white-space: nowrap; font-size: 11px; }
+.message-quote-preview { display: block; min-width: 0; max-width: 100%; padding: 6px 9px; overflow: hidden; border: 0; border-left: 3px solid #9fc5e8; border-radius: 5px; color: #6f7e91; background: rgba(233,240,247,.85); text-align: left; text-overflow: ellipsis; white-space: nowrap; font: inherit; font-size: 11px; cursor: pointer; }
+.message-quote-preview:hover { background: #dceaf6; }
+.message-quote-preview:focus-visible { outline: 2px solid #268cf1; outline-offset: 2px; }
+.message-quote-preview:disabled { cursor: progress; opacity: .65; }
 .message-row.outgoing .message-quote-preview { border-left-color: #d6eaff; color: #e7f2ff; background: rgba(35,111,188,.78); }
+.message-row.outgoing .message-quote-preview:hover { background: #24639f; }
+.message-row.message-highlighted .message-bubble { outline: 3px solid #e9b347; outline-offset: 3px; }
+.message-row.message-highlighted { background: rgba(250,211,104,.14); border-radius: 6px; }
 .message-image-link { display: block; width: fit-content; max-width: 100%; margin: 3px 0; border-radius: 10px; overflow: hidden; line-height: 0; }
 .message-image { display: block; width: auto; max-width: min(360px, 68vw); height: auto; max-height: 420px; object-fit: contain; background: #edf1f5; }
 .message-face { display: inline-block; width: 1em; height: 1em; margin: 0 .08em; object-fit: contain; vertical-align: -.125em; }
@@ -237,7 +243,16 @@ dialog::backdrop { background: rgba(20,33,49,.42); backdrop-filter: blur(3px); }
 .context-menu button { display: flex; width: 100%; align-items: center; padding: 8px 11px; border: 0; border-radius: 7px; color: #33445a; background: transparent; text-align: left; font-size: 12px; }
 .context-menu button:hover, .context-menu button:focus { outline: 0; background: #eaf3fc; }
 .context-menu button.danger { color: #ce4052; }
+.context-menu button:disabled { color: #a1acb8; background: transparent; cursor: not-allowed; }
+.clipboard-copy-buffer { position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
 .context-menu-separator { height: 1px; margin: 5px 4px; background: #e8edf2; }
+
+@media (pointer: coarse) {
+  .message-bubble { -webkit-user-select: text; user-select: text; }
+  .message-more-button { display: grid; }
+  .message-row.outgoing .message-more-button { margin-right: 0; margin-left: -10px; }
+  .context-menu button { min-height: 44px; font-size: 14px; }
+}
 
 @media (max-width: 1100px) {
   .app-shell { grid-template-columns: 300px 1fr; }

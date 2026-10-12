@@ -104,6 +104,8 @@ export interface StoredMessage {
   msgIdx?: string
   /** 当前消息所引用的另一条消息索引。 */
   refMsgIdx?: string
+  /** 查询时附带的原消息摘要，不单独持久化。 */
+  reference?: Pick<StoredMessage, 'id' | 'senderName' | 'content' | 'status'>
   timestamp: number
   status: 'sent' | 'received' | 'pending' | 'failed' | 'recalled'
   recalledAt?: number

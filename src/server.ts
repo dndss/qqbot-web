@@ -236,9 +236,9 @@ function scheduleForwardImageCache(conversationId: string, accountId: string): v
   forwardCacheRequests.set(key, request)
 }
 
-async function prepareConversationMessages(conversationId: string, limit: number, before?: string): Promise<MessagePage> {
+async function prepareConversationMessages(conversationId: string, limit: number, before?: string, through?: string): Promise<MessagePage> {
   const accountId = store.getActiveAccount()?.id
-  const page = store.listMessagesPage(conversationId, limit, before)
+  const page = store.listMessagesPage(conversationId, limit, before, through)
   if (!accountId) return page
   const upgrades = page.messages.flatMap((message) => {
     if (forwardPart(message)) return []
@@ -247,7 +247,7 @@ async function prepareConversationMessages(conversationId: string, limit: number
   })
   if (upgrades.length) await store.updateMessages(conversationId, upgrades)
   scheduleForwardImageCache(conversationId, accountId)
-  return store.listMessagesPage(conversationId, limit, before)
+  return store.listMessagesPage(conversationId, limit, before, through)
 }
 
 function messageSceneIndexes(event: IncomingMessageLike): { msgIdx?: string; refMsgIdx?: string } {
@@ -424,7 +424,7 @@ async function handleIncoming(event: IncomingMessageLike, accountId: string): Pr
   if (accountId !== botAccountId || accountId !== store.getActiveAccount()?.id) return
   if (!normalized) return
   await store.addMessage(normalized.conversation, normalized.message)
-  publish('message', normalized)
+  publish('message', { ...normalized, message: store.withMessageReference(normalized.message) })
 }
 
 async function connectBot(): Promise<void> {
@@ -796,6 +796,25 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
 
   if (url.pathname === '/api/conversations' && request.method === 'GET') {
     sendJson(response, 200, store.listConversations())
+    return true
+  }
+
+  const referenceMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages\/([^/]+)\/reference$/)
+  if (referenceMatch && request.method === 'GET') {
+    const conversationId = decodeURIComponent(referenceMatch[1])
+    const messageId = decodeURIComponent(referenceMatch[2])
+    if (!store.getMessage(conversationId, messageId)) {
+      sendJson(response, 404, { error: '引用消息不存在' })
+      return true
+    }
+    const target = store.getMessageReference(conversationId, messageId)
+    if (!target) {
+      sendJson(response, 404, { error: '原消息未保存在当前会话中，无法定位' })
+      return true
+    }
+    const before = url.searchParams.get('before')?.trim() || undefined
+    const page = await prepareConversationMessages(conversationId, 200, before, target.id)
+    sendJson(response, 200, { ...page, messageId: target.id })
     return true
   }
 
