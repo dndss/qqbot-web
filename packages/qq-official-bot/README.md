@@ -1,10 +1,13 @@
 # 内置 QQ 官方机器人 SDK
 
-本目录是 Web QQ 项目内置的 `qq-official-bot` SDK，包含源码与已编译的 `lib` 产物，供上层 Web 项目通过本地文件依赖直接使用。
+本目录是 Web QQ 项目的 `qq-official-bot` 本地依赖目录，供 Web 通过文件依赖使用
+同步后的 `lib` 构建产物。唯一源码维护入口为外层 `sdk/qq-official-bot`；本目录
+保留的 `src` 是历史快照，不作为修改和重新构建入口。
 
 - SDK 上游仓库：<https://github.com/dndss/qq-official-bot>
-- 当前内置版本基于上游 `main` 分支提交 `ac8a82d`。
-- 更新 SDK 时，请从上游同步源码后在本目录执行 `pnpm install` 和 `pnpm run build`，并同时提交源码及重新生成的 `lib` 产物。
+- 源码版本和本地修改以 `sdk/qq-official-bot` 的 Git 状态为准。
+- 更新 SDK 时，在 `sdk/qq-official-bot` 修改源码并执行 `pnpm run build`，再将生成的
+  `lib` 同步到本目录及 Web 已安装依赖；不要手改产物，也不要在此目录另建 SDK 实现。
 
 以下为 SDK 原始说明。
 

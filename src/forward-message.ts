@@ -1,5 +1,6 @@
 import type { MediaCache } from './media-cache.ts'
 import type { ForwardAttachmentPart, ForwardMessagePart, ForwardNodePart } from './types.ts'
+import { messageElementUrl } from './message-media.ts'
 
 const MAX_CACHED_IMAGES_PER_FORWARD = 20
 
@@ -28,6 +29,7 @@ function normalizeAttachment(value: unknown): ForwardAttachmentPart | undefined 
   const kind = ['image', 'video', 'audio', 'file'].includes(rawKind ?? '')
     ? rawKind as ForwardAttachmentPart['kind']
     : 'file'
+  const wavUrl = kind === 'audio' ? messageElementUrl({ url: attachment.voice_wav_url }) : undefined
   return {
     index: optionalNumber(attachment.index) ?? 0,
     kind,
@@ -37,6 +39,7 @@ function normalizeAttachment(value: unknown): ForwardAttachmentPart | undefined 
     ...(optionalNumber(attachment.height) !== undefined ? { height: optionalNumber(attachment.height) } : {}),
     ...(optionalString(attachment.size_text) ? { sizeText: optionalString(attachment.size_text) } : {}),
     ...(optionalString(attachment.url) ? { url: optionalString(attachment.url) } : {}),
+    ...(wavUrl ? { wavUrl } : {}),
     ...(attachment.animated === true ? { animated: true } : {}),
   }
 }

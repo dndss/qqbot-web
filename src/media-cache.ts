@@ -30,10 +30,11 @@ function validAccountId(accountId: string): boolean {
   return /^[a-zA-Z0-9_-]+$/.test(accountId)
 }
 
-function isPublicIpAddress(address: string): boolean {
+export function isPublicIpAddress(address: string): boolean {
   const normalized = address.toLowerCase()
   const mappedIpv4 = normalized.match(/^::ffff:(\d+\.\d+\.\d+\.\d+)$/)?.[1]
   if (mappedIpv4) return isPublicIpAddress(mappedIpv4)
+  if (normalized.startsWith('::ffff:')) return false
   if (isIP(normalized) === 4) {
     const [a, b] = normalized.split('.').map(Number)
     return !(

@@ -10,6 +10,7 @@ const state = {
   referenceNavigationToken: 0,
   locatingReference: false,
   highlightedMessageId: null,
+  expandedReferences: new Set(),
   followLatestMessage: true,
   status: { state: 'disconnected', error: '', selfId: null },
   query: '',
@@ -25,6 +26,106 @@ const state = {
 const elements = Object.fromEntries(
   [...document.querySelectorAll('[id]')].map((element) => [element.id.replace(/-([a-z])/g, (_, letter) => letter.toUpperCase()), element]),
 )
+
+// Keep media elements alive across message-list refreshes.
+const audioPlayers = new Map()
+
+function resetAudioPlayer(player, keepSource = true) {
+  player.audio.pause()
+  player.audio.removeAttribute('src')
+  player.audio.load()
+  if (keepSource) player.audio.src = player.url
+  player.stop.disabled = true
+  player.error.hidden = true
+  player.retry.hidden = true
+}
+
+function stopAllAudioPlayers() {
+  for (const player of audioPlayers.values()) resetAudioPlayer(player, false)
+  audioPlayers.clear()
+}
+
+function pruneAudioPlayers() {
+  for (const [key, player] of audioPlayers) {
+    if (!player.container.isConnected) {
+      resetAudioPlayer(player, false)
+      audioPlayers.delete(key)
+    }
+  }
+}
+
+function renderAudioPlayer(container, part, context, index) {
+  if (!safeMediaUrl(part.wavUrl) || !context?.accountId) {
+    const note = document.createElement('span')
+    note.className = 'message-audio-note'
+    note.textContent = '暂无可播放版本'
+    container.append(note)
+    return
+  }
+  const message = context.message
+  const params = new URLSearchParams({ accountId: context.accountId, format: 'wav' })
+  const url = `/api/conversations/${encodeURIComponent(message.conversationId)}/messages/${encodeURIComponent(message.id)}/audios/${index}/stream?${params}`
+  const key = JSON.stringify([context.accountId, message.conversationId, message.id, index])
+  let player = audioPlayers.get(key)
+  if (player && player.wavUrl !== part.wavUrl) {
+    resetAudioPlayer(player, false)
+    audioPlayers.delete(key)
+    player = undefined
+  }
+  if (!player) {
+    const wrapper = document.createElement('div')
+    wrapper.className = 'message-audio'
+    const audio = document.createElement('audio')
+    audio.controls = true
+    audio.preload = 'none'
+    audio.src = url
+    audio.setAttribute('aria-label', `语音播放器：${part.name || '音频'}`)
+    const actions = document.createElement('div')
+    actions.className = 'message-audio-actions'
+    const stop = document.createElement('button')
+    stop.type = 'button'
+    stop.textContent = '停止'
+    stop.setAttribute('aria-label', '停止语音')
+    stop.disabled = true
+    const retry = document.createElement('button')
+    retry.type = 'button'
+    retry.textContent = '重试播放'
+    retry.hidden = true
+    const error = document.createElement('span')
+    error.className = 'message-audio-error'
+    error.setAttribute('role', 'status')
+    error.textContent = '语音播放失败，可重试或下载 WAV'
+    error.hidden = true
+    actions.append(stop, retry)
+    wrapper.append(audio, actions, error)
+    player = { container: wrapper, audio, stop, retry, error, url, wavUrl: part.wavUrl }
+    audioPlayers.set(key, player)
+    audio.addEventListener('play', () => {
+      for (const other of audioPlayers.values()) {
+        if (other !== player && (!other.audio.paused || other.audio.currentTime > 0 || other.audio.networkState === HTMLMediaElement.NETWORK_LOADING)) {
+          resetAudioPlayer(other)
+        }
+      }
+      stop.disabled = false
+      error.hidden = true
+      retry.hidden = true
+    })
+    audio.addEventListener('ended', () => { stop.disabled = true })
+    audio.addEventListener('error', () => {
+      if (!audio.error || !audio.getAttribute('src')) return
+      error.hidden = false
+      retry.hidden = false
+    })
+    stop.addEventListener('click', () => resetAudioPlayer(player))
+    retry.addEventListener('click', () => {
+      resetAudioPlayer(player)
+      void audio.play().catch(() => { error.hidden = false; retry.hidden = false })
+    })
+  }
+  container.append(player.container)
+}
+
+window.addEventListener('pagehide', stopAllAudioPlayers)
 
 const typeLabels = {
   private: 'C2C 私聊',
@@ -115,7 +216,7 @@ function mediaFallback(label) {
   return fallback
 }
 
-function renderForwardAttachment(container, attachment) {
+function renderForwardAttachment(container, attachment, downloadContext) {
   const item = document.createElement('div')
   item.className = 'forward-attachment'
   if (attachment.kind === 'image' && attachment.url) {
@@ -124,13 +225,14 @@ function renderForwardAttachment(container, attachment) {
       url: attachment.url,
       localUrl: attachment.localUrl,
       name: attachment.name,
-    })
+    }, downloadContext)
   } else {
     renderMessagePart(item, {
       type: attachment.kind,
       url: attachment.url,
+      wavUrl: attachment.wavUrl,
       name: attachment.name || attachment.rawType,
-    })
+    }, downloadContext)
   }
   const details = [
     attachment.animated ? '动图' : attachment.rawType,
@@ -146,7 +248,7 @@ function renderForwardAttachment(container, attachment) {
   container.append(item)
 }
 
-function renderForwardNode(container, node, depth = 0) {
+function renderForwardNode(container, node, depth = 0, downloadContext) {
   const item = document.createElement('div')
   item.className = `forward-node ${depth ? 'nested' : ''}`
   const sender = document.createElement('strong')
@@ -162,19 +264,19 @@ function renderForwardNode(container, node, depth = 0) {
   if (node.attachments?.length) {
     const attachments = document.createElement('div')
     attachments.className = 'forward-attachments'
-    for (const attachment of node.attachments) renderForwardAttachment(attachments, attachment)
+    for (const attachment of node.attachments) renderForwardAttachment(attachments, attachment, downloadContext)
     item.append(attachments)
   }
   if (node.children?.length) {
     const children = document.createElement('div')
     children.className = 'forward-children'
-    for (const child of node.children) renderForwardNode(children, child, depth + 1)
+    for (const child of node.children) renderForwardNode(children, child, depth + 1, downloadContext)
     item.append(children)
   }
   container.append(item)
 }
 
-function renderForwardMessage(container, part) {
+function renderForwardMessage(container, part, downloadContext) {
   const card = document.createElement('section')
   card.className = 'forward-card'
   const title = document.createElement('header')
@@ -183,12 +285,12 @@ function renderForwardMessage(container, part) {
   card.append(title)
   const nodes = document.createElement('div')
   nodes.className = 'forward-nodes'
-  for (const node of part.nodes || []) renderForwardNode(nodes, node)
+  for (const node of part.nodes || []) renderForwardNode(nodes, node, 0, downloadContext)
   card.append(nodes)
   container.append(card)
 }
 
-function renderMessagePart(container, part) {
+function renderMessagePart(container, part, downloadContext) {
   if (!part || typeof part !== 'object') return
   switch (part.type) {
     case 'text':
@@ -270,25 +372,41 @@ function renderMessagePart(container, part) {
     case 'video':
     case 'audio':
     case 'file': {
+      const mediaKind = ['video', 'audio'].includes(part.type) ? part.type : undefined
+      const mediaIndex = mediaKind && downloadContext ? downloadContext[`${mediaKind}Index`]++ : undefined
       const labels = { video: '视频', audio: '音频', file: '文件' }
       const label = part.name || labels[part.type]
       const url = safeMediaUrl(part.url)
-      if (!url) {
+      const wavUrl = part.type === 'audio' ? safeMediaUrl(part.wavUrl) : null
+      if (!url && !wavUrl) {
         container.append(mediaFallback(`[${label}]`))
         break
       }
-      const link = document.createElement('a')
-      link.className = 'message-attachment'
-      link.href = url
-      link.target = '_blank'
-      link.rel = 'noopener noreferrer'
-      link.referrerPolicy = 'no-referrer'
-      link.textContent = `打开${label}`
-      container.append(link)
+      const appendLink = (sourceUrl, format = 'original') => {
+        const link = document.createElement('a')
+        link.className = 'message-attachment'
+        if (mediaIndex !== undefined && downloadContext.accountId) {
+          const message = downloadContext.message
+          const params = new URLSearchParams({ accountId: downloadContext.accountId })
+          if (format === 'wav') params.set('format', 'wav')
+          link.href = `/api/conversations/${encodeURIComponent(message.conversationId)}/messages/${encodeURIComponent(message.id)}/${mediaKind}s/${mediaIndex}/download?${params}`
+        } else {
+          link.href = sourceUrl
+        }
+        link.target = '_blank'
+        link.rel = 'noopener noreferrer'
+        link.referrerPolicy = 'no-referrer'
+        link.textContent = format === 'wav' ? '下载 WAV' : `${mediaKind ? '下载' : '打开'}${label}`
+        if (format === 'wav') link.title = `WAV 音频副本：${label}`
+        container.append(link)
+      }
+      if (url) appendLink(url)
+      if (wavUrl) appendLink(wavUrl, 'wav')
+      if (part.type === 'audio') renderAudioPlayer(container, part, downloadContext, mediaIndex)
       break
     }
     case 'forward':
-      renderForwardMessage(container, part)
+      renderForwardMessage(container, part, downloadContext)
       break
     case 'unsupported':
       container.append(mediaFallback(part.label || '[暂不支持的消息]'))
@@ -307,9 +425,10 @@ function renderMessageContent(container, message) {
     return
   }
   container.classList.add('has-rich-content')
+  const downloadContext = { message, accountId: state.status.account?.id, videoIndex: 0, audioIndex: 0 }
   for (const part of message.parts) {
     if (part.type === 'reply' && (message.refMsgIdx || part.messageId)) continue
-    renderMessagePart(container, part)
+    renderMessagePart(container, part, downloadContext)
   }
 }
 
@@ -727,6 +846,7 @@ function renderAccounts() {
 }
 
 function applyAccountSnapshot(snapshot) {
+  stopAllAudioPlayers()
   state.accounts = snapshot.accounts || []
   state.conversations = snapshot.conversations || []
   state.status = snapshot.status || state.status
@@ -739,6 +859,7 @@ function applyAccountSnapshot(snapshot) {
   state.referenceNavigationToken += 1
   state.locatingReference = false
   state.highlightedMessageId = null
+  state.expandedReferences.clear()
   clearTimeout(focusReferencedMessage.timer)
   setMobileDetailOpen(false)
   if (history.state?.mobileDetailOpen) history.replaceState({ ...history.state, mobileDetailOpen: false }, '')
@@ -820,6 +941,83 @@ function findReferencedMessage(message, indexes = messageReferenceIndexes()) {
     ? indexes.byIdx.get(message.refMsgIdx)
     : indexes.byIdx.get(replyId) || indexes.byId.get(replyId)
   return target?.id !== message.id ? target : undefined
+}
+
+function renderReferenceContents(container, message) {
+  renderReferenceSnapshot(container, message.quotedMessage)
+  if (!container.childElementCount && (message.refMsgIdx || message.parts?.some((part) => part.type === 'reply'))) {
+    const missing = document.createElement('div')
+    missing.className = 'message-quote-content'
+    missing.textContent = '原消息未保存在当前会话中'
+    container.append(missing)
+  }
+}
+
+function renderReferenceSnapshot(container, snapshot, depth = 0) {
+  if (!snapshot || depth >= 16) return
+  for (const value of snapshot.nodes || []) {
+    const node = document.createElement('div')
+    node.className = 'message-quote-node'
+    const content = document.createElement('div')
+    content.className = 'message-quote-content'
+    content.textContent = value.content
+    node.append(content)
+    if (value.children?.length) {
+      const children = document.createElement('div')
+      children.className = 'message-quote-children'
+      renderReferenceSnapshot(children, { nodes: value.children }, depth + 1)
+      node.append(children)
+    }
+    container.append(node)
+  }
+  if (snapshot.raw) {
+    const raw = document.createElement('div')
+    raw.className = 'message-quote-content'
+    raw.textContent = snapshot.raw
+    container.append(raw)
+  }
+  if (snapshot.truncated) {
+    const note = document.createElement('div')
+    note.className = 'message-quote-note'
+    note.textContent = '引用内容过长，仅展示部分'
+    container.append(note)
+  }
+}
+
+function renderMessageReference(stack, message, indexes) {
+  const quoted = findReferencedMessage(message, indexes) || message.reference
+  if (quoted) {
+    const preview = document.createElement('button')
+    preview.type = 'button'
+    preview.className = 'message-quote message-quote-preview message-quote-linked'
+    preview.textContent = `${quoted.senderName}：${quoted.status === 'recalled' ? '[消息已撤回]' : quoted.content}`
+    preview.title = '定位原消息'
+    preview.addEventListener('click', () => void locateReferencedMessage(message, preview))
+    stack.append(preview)
+    return
+  }
+  const details = document.createElement('details')
+  details.className = 'message-quote'
+  details.open = state.expandedReferences.has(message.id)
+  const summary = document.createElement('summary')
+  summary.className = 'message-quote-preview'
+  summary.textContent = '引用消息'
+  const contents = document.createElement('div')
+  contents.className = 'message-quote-details'
+  details.append(summary, contents)
+  const populate = () => {
+    if (!contents.childElementCount) renderReferenceContents(contents, message)
+  }
+  if (details.open) populate()
+  details.addEventListener('toggle', () => {
+    if (details.open) {
+      state.expandedReferences.add(message.id)
+      populate()
+    } else {
+      state.expandedReferences.delete(message.id)
+    }
+  })
+  stack.append(details)
 }
 
 function focusReferencedMessage(messageId) {
@@ -954,18 +1152,8 @@ function renderMessages(options = {}) {
     bubble.addEventListener('contextmenu', (event) => openMessageMenu(event, message))
     stack.append(meta)
     const replyId = message.parts?.find((part) => part.type === 'reply' && part.messageId)?.messageId
-    if ((message.refMsgIdx || replyId) && message.status !== 'recalled') {
-      const quoted = findReferencedMessage(message, referenceIndexes) || message.reference
-      const preview = document.createElement('button')
-      preview.type = 'button'
-      preview.className = 'message-quote-preview'
-      preview.textContent = quoted
-        ? `${quoted.senderName}：${quoted.status === 'recalled' ? '[消息已撤回]' : quoted.content}`
-        : '引用消息'
-      preview.title = '定位原消息'
-      preview.setAttribute('aria-label', `定位原消息：${preview.textContent}`)
-      preview.addEventListener('click', () => void locateReferencedMessage(message, preview))
-      stack.append(preview)
+    if ((message.refMsgIdx || replyId || message.quotedMessage || message.reference) && message.status !== 'recalled') {
+      renderMessageReference(stack, message, referenceIndexes)
     }
     stack.append(bubble)
     const uploadStatus = uploadStatusText(message)
@@ -979,6 +1167,7 @@ function renderMessages(options = {}) {
     row.append(avatar, stack)
     elements.messageList.append(row)
   }
+  pruneAudioPlayers()
   requestAnimationFrame(() => {
     if (state.messageLoadToken !== loadToken) return
     if (options.scrollToMessageId) {
@@ -1102,7 +1291,11 @@ function renderSelectedConversation() {
   const hasConversation = Boolean(conversation)
   elements.emptyState.classList.toggle('hidden', hasConversation)
   elements.chatView.classList.toggle('hidden', !hasConversation)
-  if (!conversation) return
+  if (!conversation) {
+    stopAllAudioPlayers()
+    elements.messageList.replaceChildren()
+    return
+  }
 
   elements.chatTitle.textContent = conversation.title
   elements.chatSubtitle.textContent = conversation.subtitle
@@ -1153,6 +1346,7 @@ async function loadConversations() {
 }
 
 async function selectConversation(id) {
+  stopAllAudioPlayers()
   const shouldOpenMobileHistory = window.innerWidth < 760 && !document.body.classList.contains('mobile-chat-open')
   const loadToken = ++state.messageLoadToken
   setMobileDetailOpen(false)
@@ -1167,6 +1361,7 @@ async function selectConversation(id) {
   state.referenceNavigationToken += 1
   state.locatingReference = false
   state.highlightedMessageId = null
+  state.expandedReferences.clear()
   clearTimeout(focusReferencedMessage.timer)
   const page = await api(`/api/conversations/${encodeURIComponent(id)}/messages?limit=200`)
   if (state.selectedId !== id || state.messageLoadToken !== loadToken) return
@@ -1363,6 +1558,7 @@ elements.connectionButton.addEventListener('click', async () => {
 })
 
 elements.accountSelect.addEventListener('change', async () => {
+  stopAllAudioPlayers()
   const accountId = elements.accountSelect.value
   if (!accountId) return
   elements.accountSelect.disabled = true

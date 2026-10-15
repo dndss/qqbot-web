@@ -1,3 +1,5 @@
+import type { ReferenceMessageData } from 'qq-official-bot'
+
 export type ConversationType = 'private' | 'group'
 export type SenderRole = 'owner' | 'admin'
 
@@ -10,6 +12,8 @@ export interface ForwardAttachmentPart {
   height?: number
   sizeText?: string
   url?: string
+  /** 官方提供的 WAV 音频副本地址，与原始 url 分开保存。 */
+  wavUrl?: string
   localUrl?: string
   animated?: boolean
 }
@@ -34,7 +38,7 @@ export type MessagePart =
   | { type: 'face'; id: string; text?: string }
   | { type: 'at'; userId: string; name?: string }
   | { type: 'reply'; messageId: string }
-  | { type: 'video' | 'audio' | 'file'; url?: string; name?: string; description?: string }
+  | { type: 'video' | 'audio' | 'file'; url?: string; name?: string; description?: string; wavUrl?: string }
   | ForwardMessagePart
   | { type: 'unsupported'; label: string }
 
@@ -104,11 +108,22 @@ export interface StoredMessage {
   msgIdx?: string
   /** 当前消息所引用的另一条消息索引。 */
   refMsgIdx?: string
+  /** SDK 解析的引用快照，不参与原消息身份推断。 */
+  quotedMessage?: ReferenceMessageData
   /** 查询时附带的原消息摘要，不单独持久化。 */
-  reference?: Pick<StoredMessage, 'id' | 'senderName' | 'content' | 'status'>
+  reference?: MessageReference
   timestamp: number
   status: 'sent' | 'received' | 'pending' | 'failed' | 'recalled'
   recalledAt?: number
+}
+
+export interface MessageReference {
+  id: string
+  senderName: string
+  content: string
+  status: StoredMessage['status']
+  quotedMessage?: ReferenceMessageData
+  reference?: MessageReference
 }
 
 export interface MessagePage {
@@ -131,6 +146,7 @@ export interface IncomingMessageLike {
   message_id?: string
   id?: string
   msg_idx?: string
+  quoted_message?: ReferenceMessageData
   message_scene?: {
     ext?: unknown[]
   }

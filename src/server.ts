@@ -5,6 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { randomUUID } from 'node:crypto'
 import { Bot, ReceiverMode, segment } from 'qq-official-bot'
 import { MediaCache } from './media-cache.ts'
+import { handleMediaRequest } from './media-download.ts'
+import { messageElementUrl, normalizeMediaPart } from './message-media.ts'
 import {
   cacheForwardImages,
   hasUncachedForwardImages,
@@ -102,21 +104,6 @@ function senderRoles(event: IncomingMessageLike): SenderRole[] {
   return roles
 }
 
-function messageElementUrl(data: Record<string, unknown>): string | undefined {
-  const value = typeof data.url === 'string'
-    ? data.url
-    : typeof data.file === 'string'
-      ? data.file
-      : ''
-  if (!value) return undefined
-  try {
-    const url = new URL(value)
-    return ['http:', 'https:'].includes(url.protocol) ? url.href : undefined
-  } catch {
-    return undefined
-  }
-}
-
 async function normalizeMessagePart(
   element: NonNullable<IncomingMessageLike['message']>[number],
   accountId: string,
@@ -160,15 +147,8 @@ async function normalizeMessagePart(
       return { type: 'reply', messageId: String(data.message_id ?? data.id ?? '') }
     case 'video':
     case 'audio':
-    case 'file': {
-      const url = messageElementUrl(data)
-      const nameValue = data.name ?? data.filename
-      const name = typeof nameValue === 'string' && nameValue.trim() ? nameValue.trim() : undefined
-      const description = typeof data.description === 'string' && data.description.trim()
-        ? data.description.trim()
-        : undefined
-      return { type, ...(url ? { url } : {}), ...(name ? { name } : {}), ...(description ? { description } : {}) }
-    }
+    case 'file':
+      return normalizeMediaPart(type, data)
     case 'markdown': {
       const text = String(data.content ?? '')
       return text ? { type: 'text', text } : { type: 'unsupported', label: '[Markdown 消息]' }
@@ -196,7 +176,7 @@ function messagePreview(parts: MessagePart[]): string {
       case 'image': return part.description || '[图片]'
       case 'face': return part.text || `[表情${part.id ? ` ${part.id}` : ''}]`
       case 'at': return `@${part.name || (part.userId === 'all' ? '所有人' : shortId(part.userId))}`
-      case 'reply': return '[回复]'
+      case 'reply': return ''
       case 'video': return part.description || '[视频]'
       case 'audio': return part.description || '[音频]'
       case 'file': return `[文件${part.name ? `：${part.name}` : ''}]`
@@ -411,6 +391,7 @@ async function normalizeIncoming(event: IncomingMessageLike, accountId: string):
       roles: senderRoles(event),
       content,
       ...(parts.length ? { parts } : {}),
+      ...(event.quoted_message ? { quotedMessage: structuredClone(event.quoted_message) } : {}),
       ...indexes,
       timestamp,
       status: 'received',
@@ -702,6 +683,7 @@ async function readJson(request: IncomingMessage): Promise<Record<string, unknow
 }
 
 async function handleApi(request: IncomingMessage, response: ServerResponse, url: URL): Promise<boolean> {
+  if (await handleMediaRequest(request, response, url, store)) return true
   if (url.pathname === '/api/status' && request.method === 'GET') {
     sendJson(response, 200, statusPayload())
     return true

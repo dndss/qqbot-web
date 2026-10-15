@@ -10,6 +10,7 @@ import type {
   PublicBotAccount,
   MessagePage,
   StoredMessage,
+  MessageReference,
 } from './types.ts'
 
 const EMPTY_DATABASE: Database = { conversations: [], messages: [] }
@@ -168,7 +169,8 @@ export class JsonStore {
   }
 
   withMessageReference(message: StoredMessage): StoredMessage {
-    return this.#withReference(message, this.getMessageReference(message.conversationId, message.id))
+    const messages = this.#database.messages.filter((item) => item.conversationId === message.conversationId)
+    return this.#withReference(message, this.#referenceIndexes(messages))
   }
 
   #referenceIndexes(messages: StoredMessage[]): MessageIndexes {
@@ -189,16 +191,27 @@ export class JsonStore {
     return target?.id !== source.id ? target : undefined
   }
 
-  #withReference(message: StoredMessage, target?: StoredMessage): StoredMessage {
+  #referenceSnapshot(message: StoredMessage, indexes: MessageIndexes, seen: Set<string>): MessageReference | undefined {
+    const target = this.#resolveReference(message, indexes)
+    if (!target || seen.has(target.id) || seen.size >= 16) return
+    seen.add(target.id)
+    const reference = target.status === 'recalled' ? undefined : this.#referenceSnapshot(target, indexes, seen)
+    return {
+      id: target.id,
+      senderName: target.senderName,
+      content: target.status === 'recalled' ? '[消息已撤回]' : target.content,
+      status: target.status,
+      ...(target.status !== 'recalled' && target.quotedMessage ? { quotedMessage: target.quotedMessage } : {}),
+      ...(reference ? { reference } : {}),
+    }
+  }
+
+  #withReference(message: StoredMessage, indexes: MessageIndexes): StoredMessage {
+    const target = this.#referenceSnapshot(message, indexes, new Set([message.id]))
     if (!target) return message
     return {
       ...message,
-      reference: {
-        id: target.id,
-        senderName: target.senderName,
-        content: target.content,
-        status: target.status,
-      },
+      reference: target,
     }
   }
 
@@ -224,7 +237,7 @@ export class JsonStore {
     const indexes = this.#referenceIndexes(messages)
     const hasMore = start > 0
     return {
-      messages: page.map((message) => this.#withReference(message, this.#resolveReference(message, indexes))),
+      messages: page.map((message) => this.#withReference(message, indexes)),
       hasMore,
       nextCursor: hasMore ? page[0]?.id ?? null : null,
     }

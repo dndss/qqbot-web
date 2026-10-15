@@ -53,6 +53,20 @@ test('resolves references within the current conversation and preserves contiguo
     assert.throws(() => store.listMessagesPage(conversation.id, 200, undefined, 'foreign-original'))
   })
 
+  await t.test('quoted snapshots persist without inferring TMP or mismatched IDs', async () => {
+    assert.equal(store.getMessageReference(conversation.id, 'message-437'), undefined)
+    assert.equal(store.getMessageReference(conversation.id, 'message-438'), undefined)
+    const page = store.listMessagesPage(conversation.id)
+    const message = page.messages.find((item) => item.id === 'message-437')!
+    assert.equal(message.content, '4')
+    assert.equal(message.quotedMessage?.nodes[0].children?.[0].children?.[0].content, '1')
+    const linked = page.messages.find((item) => item.id === 'message-439')!
+    assert.equal(linked.reference?.id, 'message-437')
+    assert.equal(linked.reference?.quotedMessage?.nodes[0].content.trim(), '3')
+    await store.initialize()
+    assert.deepEqual(store.getMessage(conversation.id, message.id)?.quotedMessage, message.quotedMessage)
+  })
+
   await t.test('reference snapshots reflect recall updates and survive reload', async () => {
     await store.updateMessage(conversation.id, 'message-030', { status: 'recalled' })
     assert.equal(store.listMessagesPage(conversation.id).messages.find((message) => message.id === 'message-440')?.reference?.status, 'recalled')

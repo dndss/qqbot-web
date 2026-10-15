@@ -114,7 +114,14 @@ button { cursor: pointer; }
 .message-upload-status.uploading::before { animation: pulse 1s infinite; }
 .message-upload-status.success { color: #23966b; }
 .message-upload-status.failed { max-width: min(420px, 62vw); color: #d04457; text-align: right; overflow-wrap: anywhere; }
-.message-quote-preview { display: block; min-width: 0; max-width: 100%; padding: 6px 9px; overflow: hidden; border: 0; border-left: 3px solid #9fc5e8; border-radius: 5px; color: #6f7e91; background: rgba(233,240,247,.85); text-align: left; text-overflow: ellipsis; white-space: nowrap; font: inherit; font-size: 11px; cursor: pointer; }
+.message-quote { min-width: 0; width: 100%; color: #6f7e91; font-size: 12px; }
+.message-quote-preview { display: list-item; min-width: 0; max-width: 100%; padding: 6px 9px; border: 0; border-left: 3px solid #9fc5e8; border-radius: 5px; color: #6f7e91; background: rgba(233,240,247,.85); text-align: left; font: inherit; font-size: 11px; cursor: pointer; }
+.message-quote-linked { display: block; box-sizing: border-box; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.message-quote-details { margin-top: 5px; }
+.message-quote-node { min-width: 0; margin-top: 5px; padding-left: 9px; border-left: 2px solid #9fc5e8; }
+.message-quote-content { white-space: pre-wrap; overflow-wrap: anywhere; line-height: 1.6; }
+.message-quote-children { margin-top: 4px; }
+.message-quote-note { margin-top: 5px; color: #8b98a8; font-size: 11px; }
 .message-quote-preview:hover { background: #dceaf6; }
 .message-quote-preview:focus-visible { outline: 2px solid #268cf1; outline-offset: 2px; }
 .message-quote-preview:disabled { cursor: progress; opacity: .65; }
@@ -130,6 +137,15 @@ button { cursor: pointer; }
 .message-reference { display: block; margin-bottom: 6px; padding: 5px 8px; border-left: 3px solid #a9c8e8; border-radius: 4px; color: #718196; background: #f2f6fa; font-size: 12px; }
 .message-attachment, .message-media-fallback { display: inline-block; margin: 3px 2px; padding: 5px 9px; border-radius: 8px; color: #2876bd; background: #eaf4ff; text-decoration: none; }
 .message-attachment:hover { text-decoration: underline; }
+.message-audio { display: flex; flex-direction: column; gap: 4px; width: min(300px, 62vw); max-width: 100%; margin: 4px 0; }
+.message-audio audio { display: block; width: 100%; min-width: 0; }
+.message-audio-actions { display: flex; gap: 6px; }
+.message-audio-actions button { padding: 4px 9px; border: 1px solid #dce6ef; border-radius: 7px; color: #2876bd; background: #f4f8fc; font: inherit; font-size: 12px; }
+.message-audio-actions button:disabled { opacity: .5; cursor: default; }
+.message-audio-note { display: block; margin: 4px 2px; color: #718196; font-size: 12px; }
+.message-audio-error { color: #c13d50; font-size: 12px; white-space: normal; }
+.message-audio [hidden] { display: none; }
+.message-row.outgoing .message-audio-note { color: #e7f2ff; }
 .message-row.outgoing .message-face-fallback, .message-row.outgoing .message-reference, .message-row.outgoing .message-attachment, .message-row.outgoing .message-media-fallback { color: white; background: rgba(255,255,255,.17); }
 .message-row.outgoing .message-mention { color: #fff; }
 .forward-card { width: min(480px, 64vw); overflow: hidden; border: 1px solid #dfe7ef; border-radius: 12px; color: #35465a; background: #f8fafc; white-space: normal; }
@@ -246,6 +262,11 @@ dialog::backdrop { background: rgba(20,33,49,.42); backdrop-filter: blur(3px); }
 .context-menu button:disabled { color: #a1acb8; background: transparent; cursor: not-allowed; }
 .clipboard-copy-buffer { position: fixed; top: 0; left: 0; width: 1px; height: 1px; padding: 0; border: 0; opacity: 0; pointer-events: none; }
 .context-menu-separator { height: 1px; margin: 5px 4px; background: #e8edf2; }
+
+@media (pointer: coarse), (max-width: 760px) {
+  .message-quote-preview { min-height: 44px; padding: 12px 9px; box-sizing: border-box; }
+  .message-audio-actions button { min-height: 44px; }
+}
 
 @media (pointer: coarse) {
   .message-bubble { -webkit-user-select: text; user-select: text; }

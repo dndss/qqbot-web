@@ -3,6 +3,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { JsonStore } from '../src/store.ts'
 import type { Conversation, StoredMessage } from '../src/types.ts'
+import { parseReferenceMessage } from 'qq-official-bot'
 
 export async function createReferenceFixture() {
   const directory = await mkdtemp(join(tmpdir(), 'web-qq-reference-'))
@@ -43,6 +44,35 @@ export async function createReferenceFixture() {
   messages[447].refMsgIdx = 'index-447'
   messages[448].refMsgIdx = 'missing'
   messages[448].parts = [{ type: 'reply', messageId: 'message-032' }]
+  messages[436].content = '3'
+  messages[436].refMsgIdx = 'TMP-nested'
+  messages[436].quotedMessage = parseReferenceMessage({
+    message_type: 103,
+    msg_elements: [{
+      content: '=== 消息 1 ===\n[消息内容]  2\n[消息类型] 引用消息\n[关联消息]\n--- 第1条 ---\n    [消息内容] 1\n    [消息类型] 引用消息\n',
+    }],
+    parallel_message: { msg_nodes: [{ content: '2', message_type: 0 }] },
+  })
+  messages[437].content = '4'
+  messages[437].refMsgIdx = 'TMP-deep'
+  messages[437].quotedMessage = parseReferenceMessage({
+    message_type: 103,
+    msg_elements: [{
+      content: '=== 消息 1 ===\n[消息内容]  3\n[消息类型] 引用消息\n[关联消息]\n--- 第1条 ---\n    [消息内容]  2\n    [消息类型] 引用消息\n    [关联消息]\n    --- 第1条 ---\n        [消息内容] 1\n        [消息类型] 引用消息\n',
+    }],
+    parallel_message: { msg_nodes: [{ content: '3', message_type: 0 }] },
+  })
+  messages[438].content = '2'
+  messages[438].refMsgIdx = 'different-index'
+  messages[438].quotedMessage = parseReferenceMessage({
+    message_type: 103, msg_elements: [{ content: '1', message_type: 103, msg_idx: 'different-index' }],
+  })
+  messages[439].content = '5'
+  messages[439].refMsgIdx = 'index-437'
+  messages[434].content = '<script>unsafe()</script>'
+  messages[434].quotedMessage = parseReferenceMessage({
+    message_type: 103, msg_elements: [{ content: '<img src=x onerror="unsafe()">', message_type: 103 }],
+  })
   const otherMessages: StoredMessage[] = [
     { ...messages[30], id: 'foreign-original', conversationId: otherConversation.id },
     { ...messages[30], id: 'foreign-only', msgIdx: 'other-only', conversationId: otherConversation.id },
