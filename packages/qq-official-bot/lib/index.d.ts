@@ -504,6 +504,7 @@ export class WebSocketReceiver extends BaseReceiver<WebSocketHandler> {
     private heartbeatTimer;
     private heartbeatTimeoutTimer;
     private lastHeartbeatAck;
+    private cancelReconnectDelay?;
     constructor(config?: WebSocketReceiverConfig);
     /**
      * 设置WebSocket特定的事件处理器
@@ -609,6 +610,7 @@ export class WebSocketReceiver extends BaseReceiver<WebSocketHandler> {
      * 断开连接
      */
     private disconnect;
+    private waitReconnectDelay;
     /**
      * 判断异步连接任务是否仍属于当前启动周期。
      * stop() 会推进 lifecycleGeneration，使等待中的旧重连任务失效。
@@ -1018,6 +1020,8 @@ export class Connection extends EventEmitter {
     private state;
     private heartbeatParam;
     private heartbeatTimer?;
+    private lifecycleGeneration;
+    private pendingDelays;
     constructor(bot: Client, config?: ConnectionConfig);
     /**
      * 设置事件处理器
@@ -1082,6 +1086,7 @@ export class Connection extends EventEmitter {
      * 工具方法：延迟
      */
     private delay;
+    private cancelPendingReconnects;
     /**
      * 清理资源
      */
@@ -1120,6 +1125,8 @@ export class Auth {
     private refreshTimer?;
     private refreshRetryCount;
     private gatewayInfo?;
+    private generation;
+    private abortController;
     constructor(config: AuthConfig, bot: Client);
     /**
      * 获取访问令牌
@@ -1172,8 +1179,9 @@ export class Auth {
      */
     clearAuth(): void;
     /**
-     * 工具方法：延迟
+     * 验证认证任务仍属于当前周期
      */
+    private ensureActive;
     private delay;
     /**
      * 销毁认证管理器
@@ -1203,6 +1211,11 @@ export class Session<T extends ReceiverMode, M extends ApplicationPlatform = nev
     private readonly bot;
     private readonly connectionManager;
     private readonly authManager;
+    private startPromise?;
+    private rejectStart?;
+    private stopPromise?;
+    private receiverStopPromise?;
+    private lifecycleGeneration;
     private _wsUrl;
     private _heartbeatParam;
     heartbeatInterval: number;
@@ -1230,6 +1243,7 @@ export class Session<T extends ReceiverMode, M extends ApplicationPlatform = nev
      */
     getValidIntends(): number;
     start(): Promise<void>;
+    private stopReceiver;
     stop(): Promise<void>;
     /**
      * 更新会话记录（用于WebSocket接收器）

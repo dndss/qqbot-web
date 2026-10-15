@@ -121,19 +121,22 @@ class Client extends events_1.EventEmitter {
         const { d: payload, id: event_id = '' } = wsRes;
         if (!payload || !event)
             return;
-        this.completeGroupAtMention(event, payload);
         const transformEvent = events_2.QQEvent[event] ?? 'system';
+        let result;
         try {
-            const result = this.processPayload(event_id, transformEvent, payload);
-            if (!result) {
-                this.logger.debug('Failed to parse event:', wsRes);
-                return;
-            }
-            this.em(transformEvent, result);
+            this.completeGroupAtMention(event, payload);
+            result = this.processPayload(event_id, transformEvent, payload);
         }
         catch (error) {
-            this.logger.debug('Failed to parse event:', wsRes);
+            this.logger.error('Failed to parse event:', { event, event_id }, error);
+            return;
         }
+        if (!result) {
+            this.logger.debug('Failed to parse event:', wsRes);
+            return;
+        }
+        // 宿主回调遵循 EventEmitter 语义，不归类为协议解析错误。
+        this.em(transformEvent, result);
     }
     em(event, payload) {
         const eventNames = event.split('.');

@@ -13,6 +13,8 @@ class Auth {
     constructor(config, bot) {
         this.bot = bot;
         this.refreshRetryCount = 0;
+        this.generation = 0;
+        this.abortController = new AbortController();
         this.config = {
             tokenRefreshBuffer: 45, // 提前45秒刷新
             maxRetries: 3,
@@ -25,10 +27,12 @@ class Auth {
      * 如果当前token有效则返回，否则重新获取
      */
     async getAccessToken() {
+        const generation = this.generation;
         if (this.isTokenValid()) {
             return this.currentToken.access_token;
         }
-        const tokenInfo = await this.fetchNewToken();
+        const tokenInfo = await this.fetchNewToken(generation);
+        this.ensureActive(generation);
         this.setToken(tokenInfo);
         return tokenInfo.access_token;
     }
@@ -36,8 +40,10 @@ class Auth {
      * 强制刷新访问令牌
      */
     async refreshAccessToken() {
+        const generation = this.generation;
         this.bot.logger.debug("[AUTH] 强制刷新访问令牌");
-        const tokenInfo = await this.fetchNewToken();
+        const tokenInfo = await this.fetchNewToken(generation);
+        this.ensureActive(generation);
         this.setToken(tokenInfo);
         return tokenInfo;
     }
@@ -45,28 +51,30 @@ class Auth {
      * 获取网关连接地址
      */
     async getGatewayUrl() {
-        if (this.gatewayInfo?.url) {
-            return this.gatewayInfo.url;
-        }
-        const gatewayInfo = await this.fetchGatewayInfo();
-        this.gatewayInfo = gatewayInfo;
+        const generation = this.generation;
+        const gatewayInfo = await this.getGatewayInfo();
+        this.ensureActive(generation);
         return gatewayInfo.url;
     }
     /**
      * 获取完整的网关信息
      */
     async getGatewayInfo() {
+        const generation = this.generation;
         if (!this.gatewayInfo) {
-            this.gatewayInfo = await this.fetchGatewayInfo();
+            const gatewayInfo = await this.fetchGatewayInfo(generation);
+            this.ensureActive(generation);
+            this.gatewayInfo = gatewayInfo;
         }
         return this.gatewayInfo;
     }
     /**
      * 从API获取新的访问令牌
      */
-    async fetchNewToken() {
+    async fetchNewToken(generation) {
         const { appid, secret } = this.config;
         for (let attempt = 1; attempt <= this.config.maxRetries; attempt++) {
+            this.ensureActive(generation);
             try {
                 this.bot.logger.debug(`[AUTH] 获取访问令牌，尝试次数: ${attempt}`);
                 const tokenUrl = this.config.accessTokenUrl ?? Auth.DEFAULT_ACCESS_TOKEN_URL;
@@ -75,11 +83,13 @@ class Auth {
                     clientSecret: secret
                 }, {
                     timeout: 10000,
+                    signal: this.abortController.signal,
                     headers: {
                         'Content-Type': 'application/json',
                         'User-Agent': 'QQBot/1.0'
                     }
                 });
+                this.ensureActive(generation);
                 if (response.status === 200 && response.data?.access_token) {
                     const tokenInfo = {
                         access_token: response.data.access_token,
@@ -97,12 +107,13 @@ class Auth {
                 }
             }
             catch (error) {
+                this.ensureActive(generation);
                 this.bot.logger.error(`[AUTH] 获取访问令牌失败 (尝试 ${attempt}/${this.config.maxRetries}):`, error);
                 if (attempt === this.config.maxRetries) {
                     throw new Error(`获取访问令牌失败，已重试 ${this.config.maxRetries} 次: ${error}`);
                 }
                 // 等待后重试
-                await this.delay(this.config.retryDelay * attempt);
+                await this.delay(this.config.retryDelay * attempt, generation);
             }
         }
         throw new Error("获取访问令牌失败");
@@ -110,9 +121,11 @@ class Auth {
     /**
      * 从API获取网关信息
      */
-    async fetchGatewayInfo() {
+    async fetchGatewayInfo(generation) {
         const token = await this.getAccessToken();
+        this.ensureActive(generation);
         for (let attempt = 1; attempt <= this.config.maxRetries; attempt++) {
+            this.ensureActive(generation);
             try {
                 this.bot.logger.debug(`[AUTH] 获取网关信息，尝试次数: ${attempt}`);
                 const gatewayUrl = this.config.gatewayUrl ?? Auth.DEFAULT_GATEWAY_URL;
@@ -125,8 +138,10 @@ class Auth {
                         "User-Agent": "v1",
                         Authorization: `QQBot ${token}`
                     },
-                    timeout: 10000
+                    timeout: 10000,
+                    signal: this.abortController.signal
                 });
+                this.ensureActive(generation);
                 if (response.data?.url) {
                     const gatewayInfo = {
                         url: response.data.url,
@@ -141,11 +156,12 @@ class Auth {
                 }
             }
             catch (error) {
+                this.ensureActive(generation);
                 this.bot.logger.error(`[AUTH] 获取网关信息失败 (尝试 ${attempt}/${this.config.maxRetries}):`, error);
                 if (attempt === this.config.maxRetries) {
                     throw new Error(`获取网关信息失败，已重试 ${this.config.maxRetries} 次: ${error}`);
                 }
-                await this.delay(this.config.retryDelay * attempt);
+                await this.delay(this.config.retryDelay * attempt, generation);
             }
         }
         throw new Error("获取网关信息失败");
@@ -170,6 +186,7 @@ class Auth {
      * 计划令牌刷新
      */
     scheduleTokenRefresh() {
+        const generation = this.generation;
         if (this.refreshTimer) {
             clearTimeout(this.refreshTimer);
         }
@@ -186,11 +203,16 @@ class Auth {
             this.bot.logger.warn(`[AUTH] 令牌剩余有效期(${remainingTokenLifetime}ms)小于等于刷新缓冲(${this.config.tokenRefreshBuffer * 1000}ms)，使用保底定时器 ${nextRefreshTime}ms`);
         }
         this.refreshTimer = setTimeout(async () => {
+            if (generation !== this.generation)
+                return;
+            this.refreshTimer = undefined;
             try {
                 this.bot.logger.debug("[AUTH] 自动刷新访问令牌");
                 await this.refreshAccessToken();
             }
             catch (error) {
+                if (generation !== this.generation)
+                    return;
                 this.bot.logger.error("[AUTH] 自动刷新令牌失败:", error);
                 this.scheduleTokenRefreshRetry();
             }
@@ -198,6 +220,7 @@ class Auth {
         this.bot.logger.debug(`[AUTH] 令牌刷新已计划，将在 ${nextRefreshTime / 1000} 秒后执行`);
     }
     scheduleTokenRefreshRetry() {
+        const generation = this.generation;
         if (this.refreshTimer) {
             clearTimeout(this.refreshTimer);
         }
@@ -209,11 +232,16 @@ class Auth {
         }
         this.refreshRetryCount += 1;
         this.refreshTimer = setTimeout(async () => {
+            if (generation !== this.generation)
+                return;
+            this.refreshTimer = undefined;
             try {
                 this.bot.logger.debug("[AUTH] 重试刷新访问令牌");
                 await this.refreshAccessToken();
             }
             catch (error) {
+                if (generation !== this.generation)
+                    return;
                 this.bot.logger.error("[AUTH] 重试刷新令牌失败:", error);
                 this.scheduleTokenRefreshRetry();
             }
@@ -246,19 +274,46 @@ class Auth {
      * 清除认证信息
      */
     clearAuth() {
+        // 先使旧任务失效，再中断请求；迟到响应不能修改新一轮认证状态。
+        this.generation++;
+        this.abortController.abort();
+        this.abortController = new AbortController();
         if (this.refreshTimer) {
             clearTimeout(this.refreshTimer);
             this.refreshTimer = undefined;
         }
         this.currentToken = undefined;
         this.gatewayInfo = undefined;
+        this.refreshRetryCount = 0;
         this.bot.logger.debug("[AUTH] 认证信息已清除");
     }
     /**
-     * 工具方法：延迟
+     * 验证认证任务仍属于当前周期
      */
-    delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+    ensureActive(generation) {
+        if (generation !== this.generation) {
+            const error = new Error('认证操作已取消');
+            error.name = 'AbortError';
+            throw error;
+        }
+    }
+    delay(ms, generation) {
+        this.ensureActive(generation);
+        const signal = this.abortController.signal;
+        return new Promise((resolve, reject) => {
+            const onAbort = () => {
+                clearTimeout(timer);
+                signal.removeEventListener('abort', onAbort);
+                const error = new Error('认证操作已取消');
+                error.name = 'AbortError';
+                reject(error);
+            };
+            const timer = setTimeout(() => {
+                signal.removeEventListener('abort', onAbort);
+                resolve();
+            }, ms);
+            signal.addEventListener('abort', onAbort, { once: true });
+        });
     }
     /**
      * 销毁认证管理器

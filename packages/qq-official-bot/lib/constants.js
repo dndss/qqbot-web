@@ -77,7 +77,7 @@ exports.WebsocketCloseReason = [
     },
     {
         code: 4914,
-        reason: "机器人已下架,只允许连接沙箱环境,请断开连接,检验当前连接环境"
+        reason: "机器人已下架,请断开连接,检查机器人状态"
     },
     {
         code: 4915,

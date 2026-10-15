@@ -14,6 +14,8 @@ const constants_1 = require("../constants");
 class Connection extends events_1.EventEmitter {
     constructor(bot, config = {}) {
         super();
+        this.lifecycleGeneration = 0;
+        this.pendingDelays = new Set();
         this.bot = bot;
         this.config = {
             maxRetry: 10,
@@ -65,17 +67,21 @@ class Connection extends events_1.EventEmitter {
      * 处理重连
      */
     async handleReconnect() {
+        const generation = this.lifecycleGeneration;
         if (this.state.userClose) {
             return;
         }
         this.state.isReconnect = true;
         await this.delay(this.config.reconnectDelay);
+        if (this.state.userClose || generation !== this.lifecycleGeneration)
+            return;
         await this.connect();
     }
     /**
      * 处理断开连接
      */
     async handleDisconnect(data) {
+        const generation = this.lifecycleGeneration;
         if (this.state.userClose || [4914, 4915].includes(data.code)) {
             return;
         }
@@ -88,7 +94,13 @@ class Connection extends events_1.EventEmitter {
             }
             this.state.isReconnect = data.code === 4009;
             this.state.retry += 1;
-            await this.disconnect();
+            // 回收当前接收器，与用户主动停止区分；异步重连仍受启动周期约束。
+            this.state.alive = false;
+            this.stopHeartbeat();
+            this.emit('disconnect');
+            await Promise.resolve();
+            if (this.state.userClose || generation !== this.lifecycleGeneration)
+                return;
             await this.connect();
         }
         else {
@@ -103,8 +115,10 @@ class Connection extends events_1.EventEmitter {
      * 处理连接就绪
      */
     handleReady() {
+        this.cancelPendingReconnects();
         this.bot.logger.mark("[CONNECTION] 连接成功");
         this.state.retry = 0;
+        this.state.userClose = false;
         this.state.alive = true;
         this.startHeartbeat();
     }
@@ -121,6 +135,7 @@ class Connection extends events_1.EventEmitter {
      */
     async connect() {
         try {
+            this.cancelPendingReconnects();
             this.state.userClose = false;
             this.emit('connecting');
             // 这里会调用具体的接收器连接逻辑
@@ -136,6 +151,7 @@ class Connection extends events_1.EventEmitter {
      * 断开连接
      */
     async disconnect() {
+        this.cancelPendingReconnects();
         this.state.userClose = true;
         this.state.alive = false;
         this.stopHeartbeat();
@@ -208,12 +224,26 @@ class Connection extends events_1.EventEmitter {
      * 工具方法：延迟
      */
     delay(ms) {
-        return new Promise(resolve => setTimeout(resolve, ms));
+        return new Promise(resolve => {
+            const finish = () => {
+                clearTimeout(timer);
+                this.pendingDelays.delete(finish);
+                resolve();
+            };
+            const timer = setTimeout(finish, ms);
+            this.pendingDelays.add(finish);
+        });
+    }
+    cancelPendingReconnects() {
+        this.lifecycleGeneration++;
+        for (const cancel of this.pendingDelays)
+            cancel();
     }
     /**
      * 清理资源
      */
     destroy() {
+        this.cancelPendingReconnects();
         this.stopHeartbeat();
         this.state.userClose = true;
         this.state.alive = false;

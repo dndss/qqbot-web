@@ -43,6 +43,7 @@ class Session extends events_1.EventEmitter {
     }
     constructor(bot) {
         super();
+        this.lifecycleGeneration = 0;
         this._wsUrl = "";
         this._heartbeatParam = {
             op: 1, // OpCode.HEARTBEAT
@@ -117,25 +118,40 @@ class Session extends events_1.EventEmitter {
             this.bot.logger.debug("[SESSION] 开始连接");
         });
         this.connectionManager.on('connect', async () => {
+            const generation = this.lifecycleGeneration;
             try {
+                await this.receiverStopPromise;
+                if (this.userClose || generation !== this.lifecycleGeneration)
+                    return;
                 // 获取网关地址
-                this._wsUrl = await this.authManager.getGatewayUrl();
+                const url = await this.authManager.getGatewayUrl();
+                if (this.userClose || generation !== this.lifecycleGeneration)
+                    return;
+                this._wsUrl = url;
                 // 启动接收器
-                this.receiver.emit('start', this);
+                const receiver = this.receiver;
+                await receiver.start(this);
             }
             catch (error) {
+                if (this.userClose || generation !== this.lifecycleGeneration)
+                    return;
                 this.bot.logger.error("[SESSION] 连接准备失败:", error);
                 this.connectionManager.emit(constants_1.SessionEvents.ERROR, -1, `连接准备失败: ${error}`);
             }
         });
         this.connectionManager.on('disconnect', () => {
-            this.receiver.emit('stop', this);
+            void this.stopReceiver().catch(error => {
+                this.bot.logger.error("[SESSION] 接收器停止失败:", error);
+                this.connectionManager.emit(constants_1.SessionEvents.ERROR, -1, `接收器停止失败: ${error}`);
+            });
         });
         this.connectionManager.on('heartbeat', (heartbeatData) => {
             this._heartbeatParam = heartbeatData;
         });
         // 接收器事件处理
         this.receiver.on('ready', () => {
+            if (this.userClose || this.receiverStopPromise)
+                return;
             this.connectionManager.emit(constants_1.SessionEvents.EVENT_WS, {
                 eventType: constants_1.SessionEvents.READY
             });
@@ -144,6 +160,8 @@ class Session extends events_1.EventEmitter {
             this.connectionManager.emit(constants_1.SessionEvents.ERROR, -1, error.message || error);
         });
         this.receiver.on('close', (code, reason) => {
+            if (this.userClose || this.receiverStopPromise || !this.receiver.isStarted)
+                return;
             this.connectionManager.emit(constants_1.SessionEvents.EVENT_WS, {
                 eventType: constants_1.SessionEvents.DISCONNECT,
                 code,
@@ -165,7 +183,12 @@ class Session extends events_1.EventEmitter {
      * 获取WebSocket连接地址
      */
     async getWsUrl() {
-        this._wsUrl = await this.authManager.getGatewayUrl();
+        const generation = this.lifecycleGeneration;
+        const url = await this.authManager.getGatewayUrl();
+        if (this.userClose || generation !== this.lifecycleGeneration) {
+            throw new Error('网关连接操作已取消');
+        }
+        this._wsUrl = url;
         return this._wsUrl;
     }
     /**
@@ -181,16 +204,109 @@ class Session extends events_1.EventEmitter {
             return value | result;
         }, 0);
     }
-    async start() {
-        await this.getAccessToken();
-        return new Promise((resolve) => {
-            this.receiver.once('ready', resolve);
-            this.receiver.emit('start', this);
+    start() {
+        if (this.stopPromise)
+            return this.stopPromise.then(() => this.start());
+        if (this.startPromise)
+            return this.startPromise;
+        const generation = ++this.lifecycleGeneration;
+        this.userClose = false;
+        const receiver = this.receiver;
+        const startup = new Promise((resolve, reject) => {
+            let settled = false;
+            const cleanup = () => {
+                receiver.off('ready', onReady);
+                receiver.off('error', onError);
+                receiver.off('close', onClose);
+                if (this.rejectStart === onError)
+                    this.rejectStart = undefined;
+            };
+            const onReady = () => {
+                if (settled)
+                    return;
+                settled = true;
+                cleanup();
+                resolve();
+            };
+            const onError = (error) => {
+                if (settled)
+                    return;
+                settled = true;
+                cleanup();
+                this.userClose = true;
+                this.lifecycleGeneration++;
+                this.authManager.clearAuth();
+                // 先标记关闭，防止 close 事件触发新的连接尝试。
+                // 此时尚未就绪，直接回收接收器，保留连接管理器的可重试状态。
+                void this.stopReceiver().catch(stopError => {
+                    this.bot.logger.error("[SESSION] 启动失败后的接收器清理失败:", stopError);
+                });
+                reject(error);
+            };
+            const onClose = (code, reason) => {
+                const detail = [code, reason].filter(value => value !== undefined && value !== '').join(': ');
+                onError(new Error(`接收器在启动就绪前关闭${detail ? ` (${detail})` : ''}`));
+            };
+            this.rejectStart = onError;
+            receiver.once('ready', onReady);
+            // 在常驻处理器之前终止启动，避免失败期间进入自动重连。
+            receiver.prependOnceListener('error', onError);
+            receiver.prependOnceListener('close', onClose);
+            void (async () => {
+                try {
+                    await this.receiverStopPromise;
+                    if (settled || generation !== this.lifecycleGeneration)
+                        return;
+                    await this.getAccessToken();
+                    if (settled || generation !== this.lifecycleGeneration)
+                        return;
+                    await receiver.start(this);
+                }
+                catch (error) {
+                    onError(error instanceof Error ? error : new Error(String(error)));
+                }
+            })();
         });
+        this.startPromise = startup;
+        const clearStartup = () => {
+            if (this.startPromise === startup)
+                this.startPromise = undefined;
+        };
+        void startup.then(clearStartup, clearStartup);
+        return startup;
     }
-    async stop() {
+    stopReceiver() {
+        if (this.receiverStopPromise)
+            return this.receiverStopPromise;
+        const receiver = this.receiver;
+        const stopping = Promise.resolve().then(() => receiver.stop(this));
+        this.receiverStopPromise = stopping;
+        const clearStopping = () => {
+            if (this.receiverStopPromise === stopping)
+                this.receiverStopPromise = undefined;
+        };
+        void stopping.then(clearStopping, clearStopping);
+        return stopping;
+    }
+    stop() {
+        if (this.stopPromise)
+            return this.stopPromise;
         this.userClose = true;
-        await this.connectionManager.disconnect();
+        this.lifecycleGeneration++;
+        this.authManager.clearAuth();
+        this._wsUrl = '';
+        this.rejectStart?.(new Error('机器人启动已停止'));
+        const stopping = Promise.all([
+            this.connectionManager.disconnect(),
+            this.stopReceiver()
+        ]).then(() => undefined);
+        this.stopPromise = stopping;
+        const clearStopping = () => {
+            if (this.stopPromise === stopping)
+                this.stopPromise = undefined;
+        };
+        void stopping.then(clearStopping, clearStopping);
+        return stopping;
     }
     /**
      * 更新会话记录（用于WebSocket接收器）
