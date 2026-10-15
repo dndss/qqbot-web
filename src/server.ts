@@ -53,6 +53,13 @@ let botAppid = ''
 let botAccountId = ''
 let connectionState: ConnectionState = 'disconnected'
 let connectionError = ''
+let connectionOperation = 0
+let shuttingDown = false
+let shutdownPromise: Promise<void> | null = null
+const botStops = new WeakMap<Bot, Promise<void>>()
+const pendingBotStops = new Set<Promise<void>>()
+const failedBotStops = new Set<Bot>()
+const pendingMessages = new Set<Promise<void>>()
 const groupProfileRequests = new Map<string, Promise<Partial<Conversation>>>()
 const groupBotStateRequests = new Map<string, Promise<GroupBotState>>()
 const forwardCacheRequests = new Map<string, Promise<void>>()
@@ -409,51 +416,106 @@ async function handleIncoming(event: IncomingMessageLike, accountId: string): Pr
 }
 
 async function connectBot(): Promise<void> {
-  const account = store.getActiveAccount()
-  const config = await store.getConfig()
-  if (!account || !config?.appid || !config.secret) throw new Error('请先添加并选择 Bot 账号')
-  if (bot) await disconnectBot()
-
-  setConnectionState('connecting')
-  const nextBot = new Bot({
-    appid: config.appid,
-    secret: config.secret,
-    sandbox: config.sandbox,
-    removeAt: false,
-    logLevel: 'info',
-    maxRetry: 10,
-    intents: ['GROUP_AND_C2C_EVENT'],
-    mode: ReceiverMode.WEBSOCKET,
-  })
-
-  const accountId = account.id
-  nextBot.on('message.group', (event) => void handleIncoming(event as IncomingMessageLike, accountId))
-  nextBot.on('message.private.friend', (event) => void handleIncoming(event as IncomingMessageLike, accountId))
-
+  if (shuttingDown) throw new Error('服务正在关闭')
+  const operation = ++connectionOperation
+  let nextBot: Bot | null = null
   try {
+    const account = store.getActiveAccount()
+    const config = await store.getConfig()
+    if (!account || !config?.appid || !config.secret) throw new Error('请先添加并选择 Bot 账号')
+    if (operation !== connectionOperation) throw new Error('连接操作已取消')
+    await stopCurrentBot()
+    if (operation !== connectionOperation || shuttingDown) throw new Error('连接操作已取消')
+
+    setConnectionState('connecting')
+    nextBot = new Bot({
+      appid: config.appid,
+      secret: config.secret,
+      sandbox: config.sandbox,
+      removeAt: false,
+      logLevel: 'info',
+      maxRetry: 10,
+      intents: ['GROUP_AND_C2C_EVENT'],
+      mode: ReceiverMode.WEBSOCKET,
+    })
+    const accountId = account.id
+    for (const eventType of ['message.group', 'message.private.friend'] as const) {
+      nextBot.on(eventType, (event) => receiveMessage(event as IncomingMessageLike, accountId, eventType))
+    }
     bot = nextBot
     botAppid = config.appid
     botAccountId = accountId
     await nextBot.start()
+    if (operation !== connectionOperation || bot !== nextBot || shuttingDown) throw new Error('连接操作已取消')
     setConnectionState('connected')
   } catch (error) {
-    bot = null
-    botAppid = ''
-    botAccountId = ''
-    setConnectionState('error', errorMessage(error))
+    if (nextBot) {
+      if (bot === nextBot) clearCurrentBot()
+      try {
+        await stopBot(nextBot)
+      } catch (cleanupError) {
+        console.error(`[Bot] 启动失败后清理失败：${errorMessage(cleanupError)}`)
+      }
+    }
+    if (operation === connectionOperation) setConnectionState('error', errorMessage(error))
     throw error
   }
 }
 
-async function disconnectBot(): Promise<void> {
-  const current = bot
+function receiveMessage(event: IncomingMessageLike, accountId: string, eventType: string): void {
+  if (shuttingDown) return
+  const task = Promise.resolve().then(() => handleIncoming(event, accountId)).catch((error) => {
+    console.error(`[IncomingMessage] ${eventType} account=${accountId} message=${event.message_id || event.id || 'unknown'}：${errorMessage(error)}`)
+  })
+  pendingMessages.add(task)
+  void task.then(() => pendingMessages.delete(task), () => pendingMessages.delete(task))
+}
+
+function clearCurrentBot(): void {
   bot = null
   botAppid = ''
   botAccountId = ''
   groupProfileRequests.clear()
   groupBotStateRequests.clear()
-  if (current) await current.stop()
-  setConnectionState('disconnected')
+}
+
+function stopBot(current: Bot): Promise<void> {
+  const previous = botStops.get(current)
+  if (previous) return previous
+  const stopping = Promise.resolve().then(() => current.stop())
+  botStops.set(current, stopping)
+  pendingBotStops.add(stopping)
+  void stopping.then(() => {
+    pendingBotStops.delete(stopping)
+    failedBotStops.delete(current)
+  }, () => {
+    pendingBotStops.delete(stopping)
+    botStops.delete(current)
+    failedBotStops.add(current)
+  })
+  return stopping
+}
+
+async function stopCurrentBot(): Promise<void> {
+  const current = bot
+  clearCurrentBot()
+  for (const failed of failedBotStops) stopBot(failed)
+  if (current) stopBot(current)
+  const results = await Promise.allSettled([...pendingBotStops])
+  const errors = results.flatMap((result) => result.status === 'rejected' ? [result.reason] : [])
+  if (errors.length === 1) throw errors[0]
+  if (errors.length > 1) throw new AggregateError(errors, '机器人停止失败')
+}
+
+async function disconnectBot(): Promise<void> {
+  const operation = ++connectionOperation
+  try {
+    await stopCurrentBot()
+    if (operation === connectionOperation) setConnectionState('disconnected')
+  } catch (error) {
+    if (operation === connectionOperation) setConnectionState('error', errorMessage(error))
+    throw error
+  }
 }
 
 interface SendMessageInput {
@@ -984,6 +1046,10 @@ async function serveMedia(response: ServerResponse, pathname: string): Promise<v
 
 const server = createServer(async (request, response) => {
   try {
+    if (shuttingDown) {
+      sendJson(response, 503, { error: '服务正在关闭' })
+      return
+    }
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`)
     if (url.pathname.startsWith('/api/')) {
       if (!(await handleApi(request, response, url))) sendJson(response, 404, { error: '接口不存在' })
@@ -1004,8 +1070,41 @@ server.listen(port, host, () => {
   console.log(`QQ 官方机器人 Web 工作台已启动：http://${host}:${port}`)
 })
 
+function shutdown(): Promise<void> {
+  if (shutdownPromise) return shutdownPromise
+  shuttingDown = true
+  shutdownPromise = (async () => {
+    const serverClosed = new Promise<void>((resolve, reject) => {
+      server.close((error) => error ? reject(error) : resolve())
+    })
+    const errors: unknown[] = []
+    for (const client of sseClients) {
+      try {
+        client.end()
+      } catch (error) {
+        errors.push(error)
+      }
+    }
+    sseClients.clear()
+    const results = await Promise.allSettled([disconnectBot(), serverClosed, ...pendingMessages, ...forwardCacheRequests.values()])
+    for (const result of results) {
+      if (result.status === 'rejected') {
+        if (result.reason instanceof AggregateError) errors.push(...result.reason.errors)
+        else errors.push(result.reason)
+      }
+    }
+    if (errors.length) throw new AggregateError(errors, '服务关闭失败')
+  })()
+  return shutdownPromise
+}
+
 for (const signal of ['SIGINT', 'SIGTERM'] as const) {
   process.on(signal, () => {
-    void disconnectBot().finally(() => server.close(() => process.exit(0)))
+    if (shuttingDown) return
+    void shutdown().then(() => process.exit(0), (error) => {
+      const errors = error instanceof AggregateError ? error.errors : [error]
+      for (const failure of errors) console.error(`[Shutdown] ${errorMessage(failure)}`)
+      process.exit(1)
+    })
   })
 }

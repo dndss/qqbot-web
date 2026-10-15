@@ -59,6 +59,18 @@ pnpm dev
 pnpm test
 ```
 
+连接生命周期和消息错误边界的独立回归测试：
+
+```powershell
+node --test tests/bot-lifecycle.test.ts
+```
+
+这些测试使用 fake Bot 执行服务端实际处理函数和信号监听器，不启动工作台或读取真实账号数据。
+群聊和私聊消息处理失败时，仅记录账号 ID、消息 ID、事件类型和错误，不改变连接状态。
+启动失败会清理实例；被取消的旧连接不能覆盖新的状态。停止失败会显示错误并保留实例供再次清理，
+清理成功前不会创建替代连接。收到退出信号后，服务停止接受新操作、关闭 SSE 并等待已开始的清理与消息任务；
+清理失败会记录错误并以非零状态退出。宿主不新增捕获全进程异常后继续运行的处理器。
+
 浏览器回归脚本为 `tests/message-reference.browser.mjs`，需要可用的 Playwright。
 可通过 `PLAYWRIGHT_MODULE` 指定其模块入口，运行 `node tests/message-reference.browser.mjs`；
 脚本使用隔离测试数据，不连接 QQ，桌面和手机截图保存在 `data/test-results/reference/`。
@@ -75,6 +87,9 @@ SDK 的唯一源码维护入口为仓库外层的 `sdk/qq-official-bot`。Web �
 `file:./packages/qq-official-bot` 使用同步后的 `lib/` 构建产物；该依赖目录中保留的
 `src/` 是历史快照，不作为 SDK 修改或重新构建的入口。SDK 修改后必须在源码目录
 执行 `pnpm run build`，再同步产物并刷新已安装依赖。上游仓库及同步说明见该目录下的 `README.md`。
+SDK 产物通过既有 GitHub 流程同步到 `packages/qq-official-bot/lib` 后，还需刷新 pnpm
+安装的 `file:` 依赖并重启工作台，再验证实际加载的 SDK 版本。宿主边界测试使用 fake Bot，
+同步后的 SDK 集成行为需单独验证。
 
 监听地址在 `server.config.json` 中配置：
 
