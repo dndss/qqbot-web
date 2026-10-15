@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MessageService = void 0;
-const message_1 = require("../message/index.js");
+const message_1 = require("../message");
 const REPLY_SEQUENCE_TTL = 5 * 60 * 1000;
 class MessageService {
     constructor(request, appid) {

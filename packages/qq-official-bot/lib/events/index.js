@@ -16,7 +16,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.EventParserMap = exports.QQEvent = void 0;
 const message_1 = require("./message");
-const notice_1 = require("./notice.js");
+const notice_1 = require("../events/notice");
 __exportStar(require("./message"), exports);
 var QQEvent;
 (function (QQEvent) {

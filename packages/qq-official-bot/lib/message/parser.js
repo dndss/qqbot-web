@@ -1,8 +1,9 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.Message = void 0;
-const index_1 = require("../index.js");
-const string_1 = require("../utils/string.js");
+const reference_1 = require("./reference");
+const index_1 = require("../index");
+const string_1 = require("../utils/string");
 function decodeBase64Text(value) {
     if (typeof value !== 'string' || !value)
         return;
@@ -188,6 +189,9 @@ class Message {
 exports.Message = Message;
 (function (Message) {
     function parse(payload) {
+        const quoted = (0, reference_1.parseReferenceMessage)(payload);
+        if (quoted)
+            payload.quoted_message = quoted;
         let template = (payload.content || '').trimStart();
         let result = [];
         let brief = '';
@@ -199,10 +203,13 @@ exports.Message = Message;
             let { content_type, ...data } = attachment;
             if (typeof content_type !== 'string')
                 return false;
-            const [category] = content_type.split('/');
-            const type = ['image', 'video', 'audio'].includes(category) ? category : 'file';
+            const [category] = content_type.toLowerCase().split('/');
+            const type = category === 'voice' ? 'audio' :
+                ['image', 'video', 'audio'].includes(category) ? category : 'file';
             if (typeof data.url === 'string' && !data.url.startsWith('http'))
                 data.url = `https://${data.url}`;
+            if (type === 'audio' && typeof data.voice_wav_url === 'string' && !data.voice_wav_url.startsWith('http'))
+                data.voice_wav_url = `https://${data.voice_wav_url}`;
             if (data.filename) {
                 data.name = data.filename;
                 delete data.filename;

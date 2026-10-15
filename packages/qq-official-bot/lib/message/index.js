@@ -1,6 +1,6 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.UploadDailyLimitExceededError = exports.ChunkedUploader = exports.FileProcessor = exports.MessageBuilder = void 0;
+exports.parseReferenceMessage = exports.UploadDailyLimitExceededError = exports.ChunkedUploader = exports.FileProcessor = exports.MessageBuilder = void 0;
 /**
  * 消息系统入口文件
  */
@@ -11,3 +11,5 @@ Object.defineProperty(exports, "FileProcessor", { enumerable: true, get: functio
 var chunked_upload_1 = require("./chunked-upload");
 Object.defineProperty(exports, "ChunkedUploader", { enumerable: true, get: function () { return chunked_upload_1.ChunkedUploader; } });
 Object.defineProperty(exports, "UploadDailyLimitExceededError", { enumerable: true, get: function () { return chunked_upload_1.UploadDailyLimitExceededError; } });
+var reference_1 = require("./reference");
+Object.defineProperty(exports, "parseReferenceMessage", { enumerable: true, get: function () { return reference_1.parseReferenceMessage; } });

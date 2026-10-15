@@ -1,7 +1,7 @@
 "use strict";
 Object.defineProperty(exports, "__esModule", { value: true });
 exports.MessageEvent = exports.GuildMessageEvent = exports.GroupMessageEvent = exports.MessageAuditEvent = exports.PrivateMessageEvent = void 0;
-const parser_1 = require("../message/parser.js");
+const parser_1 = require("../message/parser");
 class PrivateMessageEvent extends parser_1.Message {
     constructor(bot, sub_type, payload) {
         super(bot, payload);

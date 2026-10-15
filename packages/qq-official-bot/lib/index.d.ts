@@ -1260,6 +1260,8 @@ export interface ForwardMessageAttachment {
     height?: number;
     size_text?: string;
     url?: string;
+    /** 官方提供的 WAV 音频副本，仅接收有效；原文件仍使用 url。 */
+    voice_wav_url?: string;
     animated?: boolean;
 }
 export interface ForwardMessageNode {
@@ -1274,6 +1276,18 @@ export interface ForwardMessageData {
     title: string;
     nodes: ForwardMessageNode[];
     raw: string;
+}
+/** 收到的引用内容快照；msg_idx 不保证等于原消息事件的引用索引。 */
+export interface ReferenceMessageNode {
+    content: string;
+    msg_idx?: string;
+    children?: ReferenceMessageNode[];
+}
+export interface ReferenceMessageData {
+    nodes: ReferenceMessageNode[];
+    /** 文本解析失败或超过限制时保留的原文。 */
+    raw?: string;
+    truncated?: boolean;
 }
 export interface MessageElemMap {
     text: {
@@ -1313,6 +1327,8 @@ export interface MessageElemMap {
     audio: {
         file: string;
         url?: string;
+        /** 官方提供的 WAV 音频副本，仅接收有效；不替换原始 url。 */
+        voice_wav_url?: string;
         /** 仅接收有效 */
         name?: string;
         /** 附件说明，接收消息时有效 */
@@ -1720,6 +1736,10 @@ export class ChunkedUploader {
     private finishPart;
     private completeUpload;
 }
+import type { ReferenceMessageData } from "elements";
+import type { Dict } from "types";
+/** 解析 message_type=103 的引用快照，不推测或重写消息 ID。 */
+export function parseReferenceMessage(payload: Dict): ReferenceMessageData | undefined;
 /**
  * 消息系统入口文件
  */
@@ -1810,7 +1830,7 @@ export namespace GroupMember {
 /**
  * 数据实体类入口文件
  */
-import type { MessageElem, Sendable } from "elements";
+import type { MessageElem, ReferenceMessageData, Sendable } from "elements";
 import type { Dict } from "types";
 import type { User } from "entries/user";
 import type { ApplicationPlatform } from "receivers/middleware";
@@ -1826,6 +1846,8 @@ export class Message {
     message_id: string;
     /** 当前消息的引用索引，用于后续引用该消息 */
     msg_idx?: string;
+    /** 引用内容快照，与当前消息正文及可定位的原消息标识分开。 */
+    quoted_message?: ReferenceMessageData;
     sender: Message.Sender;
     user_id: string;
     constructor(bot: Bot<ReceiverMode, ApplicationPlatform>, attrs: Dict);

@@ -6,9 +6,9 @@ exports.createBot = createBot;
 const client_1 = require("./client");
 const constants_1 = require("./constants");
 // 导入重构后的消息系统
-const message_1 = require("./message/index.js");
+const message_1 = require("./message");
 // 导入服务模块
-const services_1 = require("./services/index.js");
+const services_1 = require("./services");
 class Bot extends client_1.Client {
     constructor(config) {
         super(config);
