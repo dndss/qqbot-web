@@ -3,6 +3,8 @@ Object.defineProperty(exports, "__esModule", { value: true });
 exports.MessageService = void 0;
 const message_1 = require("../message");
 const REPLY_SEQUENCE_TTL = 5 * 60 * 1000;
+const REPLY_SEQUENCE_DUPLICATED = 40054005;
+const MAX_REPLY_SEQUENCE = 5;
 class MessageService {
     constructor(request, appid) {
         this.request = request;
@@ -36,6 +38,13 @@ class MessageService {
             this.replySequences.delete(messageId);
         else
             current.sequence -= 1;
+    }
+    getOpenApiErrorCode(error) {
+        const value = Number(error?.err_code ??
+            error?.response?.data?.err_code ??
+            error?.response?.data?.code ??
+            error?.code);
+        return Number.isSafeInteger(value) ? value : undefined;
     }
     /**
      * 获取子频道消息
@@ -137,6 +146,7 @@ class MessageService {
         options.signal?.throwIfAborted();
         const replyMessageId = buildResult.messagePayload.msg_id;
         let replySequence;
+        let releaseSequenceOnFailure = true;
         if (replyMessageId) {
             replySequence = this.nextReplySequence(replyMessageId);
             buildResult.messagePayload.msg_seq = replySequence;
@@ -147,11 +157,29 @@ class MessageService {
                 const uploaded = await this.uploadFile(endpointPath, buildResult, options);
                 buildResult.messagePayload.media = { file_info: uploaded.file_info };
             }
-            // 发送普通消息；重试和主动消息兜底由调用方决定。
-            return await this.sendRegularMessage(endpointPath, buildResult, options);
+            while (true) {
+                options.signal?.throwIfAborted();
+                try {
+                    return await this.sendRegularMessage(endpointPath, buildResult, options);
+                }
+                catch (error) {
+                    if (!replyMessageId || replySequence === undefined ||
+                        this.getOpenApiErrorCode(error) !== REPLY_SEQUENCE_DUPLICATED)
+                        throw error;
+                    // 已确认被腾讯占用的序号不能回退；并发已分配的序号也不重复使用。
+                    releaseSequenceOnFailure = false;
+                    const allocatedSequence = this.replySequences.get(replyMessageId)?.sequence ?? replySequence;
+                    if (Math.max(replySequence, allocatedSequence) >= MAX_REPLY_SEQUENCE)
+                        throw error;
+                    options.signal?.throwIfAborted();
+                    replySequence = this.nextReplySequence(replyMessageId);
+                    buildResult.messagePayload.msg_seq = replySequence;
+                    releaseSequenceOnFailure = true;
+                }
+            }
         }
         catch (error) {
-            if (replyMessageId && replySequence !== undefined)
+            if (releaseSequenceOnFailure && replyMessageId && replySequence !== undefined)
                 this.releaseReplySequence(replyMessageId, replySequence);
             throw error;
         }
