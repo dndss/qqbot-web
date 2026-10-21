@@ -3,8 +3,8 @@ import { EventEmitter } from 'events';
 import { WebSocket } from 'ws';
 import { ed25519 } from '@noble/curves/ed25519';
 import { Server, IncomingMessage, ServerResponse } from 'http';
-import { BinaryLike } from 'crypto';
 import { AxiosInstance, type AxiosInstance } from 'axios';
+import { BinaryLike } from 'crypto';
 export enum OpCode {
     DISPATCH = 0,// 服务端进行消息推送
     HEARTBEAT = 1,// 客户端发送心跳
@@ -156,6 +156,66 @@ export namespace GuildMember {
     }
 }
 export type Dict<T = any, K extends string | symbol = string> = Record<K, T>;
+export type MaterialImageContentType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp';
+export interface MaterialRequestOptions {
+    /** 单次请求超时（毫秒）；0 表示不限制。uploadImage 默认每步 30 秒。 */
+    timeout?: number;
+    signal?: AbortSignal;
+}
+export interface MaterialImageUploadOptions extends MaterialRequestOptions {
+    /** 本地路径默认取文件名；Buffer 必填。 */
+    fileName?: string;
+    /** 本地路径默认按文件扩展名推导；Buffer 必填。 */
+    contentType?: MaterialImageContentType;
+}
+export interface MaterialImagePrepareParams {
+    file_name: string;
+    file_size: number;
+    content_type: MaterialImageContentType;
+    /** 32 位十六进制。 */
+    md5: string;
+    /** 40 位十六进制。 */
+    sha1: string;
+}
+export interface MaterialImagePrepareResult {
+    /** 上传任务有效期 4 小时。 */
+    upload_id: string;
+    presigned_url: string;
+    /** 预签名地址有效期（秒）。 */
+    expires_in: number;
+}
+export interface MaterialImageCompleteParams {
+    upload_id: string;
+    /** COS PUT 响应 ETag 去掉引号后的值。 */
+    md5: string;
+}
+export interface MaterialImageResult {
+    image_id: string;
+    /** 用于 Markdown 的 qqbot-media:// 引用，与当前机器人绑定。 */
+    url: string;
+    /** 滑动有效期窗口（秒），成功引用后顺延。 */
+    ttl: number;
+    /** 临时预览链接，不应持久化存储。 */
+    preview_url: string;
+}
+export interface MaterialImageInfo {
+    image_id: string;
+    url: string;
+    file_name: string;
+    /** 临时预览链接，不应持久化存储。 */
+    preview_url: string;
+    /** Unix 秒；平台可能将 int64 编码为十进制字符串。 */
+    created_at: number | string;
+    /** Unix 秒，成功引用后顺延；平台可能返回十进制字符串。 */
+    expires_at: number | string;
+}
+export interface MaterialImageListResult {
+    images: MaterialImageInfo[];
+    /** 空字符串表示末页。 */
+    next_cursor: string;
+    /** 平台可能将 uint64 编码为十进制字符串。 */
+    total: number | string;
+}
 /** 流式私聊消息的输入模式。 */
 export type PrivateStreamInputMode = 'append' | 'replace';
 /** 流式私聊消息的内容格式。 */
@@ -1417,6 +1477,26 @@ type SingleWithRepeatEnd<T extends MessageElem> = [T, ...RepeatableCombineElem[]
 type SingleWithRepeat<T extends MessageElem> = [...RepeatableCombineElem[], T] | SingleWithRepeatEnd<T>;
 type WithReply<T extends MessageElem> = T | [T] | SingleWithRepeat<T> | [ReplyElem, ...SingleWithRepeat<T>] | [ReplyElem, ...RepeatableCombineElem[]];
 export type Sendable = RepeatableCombineElem | (RepeatableCombineElem)[] | WithReply<ImageElem | KeyboardElem | MDElem | ArkElem | EmbedElem | VideoElem | AudioElem | FileElem>;
+/** Markdown 图片素材管理，与普通富媒体消息上传相互独立。 */
+export class MaterialService {
+    private readonly request;
+    constructor(request: AxiosInstance);
+    /** 申请上传；摘要由调用方提供，适用于自行控制二进制上传的场景。 */
+    prepareImageUpload(payload: MaterialImagePrepareParams, options?: MaterialRequestOptions): Promise<MaterialImagePrepareResult>;
+    /** md5 必须使用 COS PUT 响应的 ETag，去掉两端引号。 */
+    completeImageUpload(payload: MaterialImageCompleteParams, options?: MaterialRequestOptions): Promise<MaterialImageResult>;
+    /** 上传本地路径；默认从文件名推导 MIME 类型。 */
+    uploadImage(file: string, options?: MaterialImageUploadOptions): Promise<MaterialImageResult>;
+    /** 上传 Buffer 时必须显式指定文件名和 MIME 类型。 */
+    uploadImage(file: Buffer, options: MaterialImageUploadOptions & {
+        fileName: string;
+        contentType: MaterialImageContentType;
+    }): Promise<MaterialImageResult>;
+    /** 首页省略 cursor；next_cursor 为空表示末页。 */
+    listImages(cursor?: string, options?: MaterialRequestOptions): Promise<MaterialImageListResult>;
+    /** 删除后引用立即失效，已发送消息中的图片副本不受影响。 */
+    deleteImage(imageId: string, options?: MaterialRequestOptions): Promise<void>;
+}
 /**
  * 消息段工厂函数集合
  * 提供便捷的消息段创建方法
@@ -2773,6 +2853,7 @@ export class Bot<T extends ReceiverMode = ReceiverMode, M extends ApplicationPla
     readonly audioService: AudioService;
     readonly botService: BotService;
     readonly groupService: GroupService;
+    readonly materialService: MaterialService;
     constructor(config: Bot.Config<T, M>);
     get middleware(): Middleware<M>;
     /**

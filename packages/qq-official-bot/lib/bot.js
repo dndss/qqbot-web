@@ -24,6 +24,7 @@ class Bot extends client_1.Client {
         this.audioService = new services_1.AudioService(this.request);
         this.botService = new services_1.BotService(this.request);
         this.groupService = new services_1.GroupService(this.request);
+        this.materialService = new services_1.MaterialService(this.request);
         // 获取基础URL
         this.messageService = new services_1.MessageService(this.request, this.config.appid);
         const nodeVersion = parseInt(process.version.slice(1));

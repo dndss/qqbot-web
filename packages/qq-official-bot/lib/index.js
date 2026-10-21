@@ -14,6 +14,7 @@ var __exportStar = (this && this.__exportStar) || function(m, exports) {
     for (var p in m) if (p !== "default" && !Object.prototype.hasOwnProperty.call(exports, p)) __createBinding(exports, m, p);
 };
 Object.defineProperty(exports, "__esModule", { value: true });
+exports.MaterialService = void 0;
 // Core classes
 __exportStar(require("./client"), exports);
 __exportStar(require("./bot"), exports);
@@ -21,6 +22,8 @@ __exportStar(require("./receivers"), exports);
 // Type definitions and elements
 __exportStar(require("./elements"), exports);
 __exportStar(require("./types"), exports);
+var material_1 = require("./services/material");
+Object.defineProperty(exports, "MaterialService", { enumerable: true, get: function () { return material_1.MaterialService; } });
 __exportStar(require("./constants"), exports);
 // Segment utilities
 __exportStar(require("./segment"), exports);

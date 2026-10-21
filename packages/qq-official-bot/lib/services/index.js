@@ -4,7 +4,7 @@
  * 集中导出所有API服务类
  */
 Object.defineProperty(exports, "__esModule", { value: true });
-exports.GroupService = exports.BotService = exports.AudioService = exports.ThreadService = exports.ScheduleService = exports.ReactionService = exports.PermissionService = exports.MemberService = exports.MessageService = exports.ChannelService = exports.GuildService = void 0;
+exports.MaterialService = exports.GroupService = exports.BotService = exports.AudioService = exports.ThreadService = exports.ScheduleService = exports.ReactionService = exports.PermissionService = exports.MemberService = exports.MessageService = exports.ChannelService = exports.GuildService = void 0;
 var guild_1 = require("./guild");
 Object.defineProperty(exports, "GuildService", { enumerable: true, get: function () { return guild_1.GuildService; } });
 var channel_1 = require("./channel");
@@ -27,3 +27,5 @@ var bot_1 = require("./bot");
 Object.defineProperty(exports, "BotService", { enumerable: true, get: function () { return bot_1.BotService; } });
 var group_1 = require("./group");
 Object.defineProperty(exports, "GroupService", { enumerable: true, get: function () { return group_1.GroupService; } });
+var material_1 = require("./material");
+Object.defineProperty(exports, "MaterialService", { enumerable: true, get: function () { return material_1.MaterialService; } });
