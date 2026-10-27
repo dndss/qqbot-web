@@ -5,7 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <meta name="theme-color" content="#eef3f8" />
     <title>QQ Bot 消息工作台</title>
-    <link rel="stylesheet" href="/styles.css?v=22" />
+    <link rel="stylesheet" href="/styles.css?v=25" />
   </head>
   <body>
     <main class="app-shell">
@@ -206,8 +206,28 @@
       </form>
     </dialog>
 
+    <dialog id="message-data-dialog" aria-labelledby="message-data-title" aria-describedby="message-data-description">
+      <div class="message-data-panel">
+        <div class="dialog-header">
+          <div>
+            <h2 id="message-data-title">消息数据</h2>
+            <p id="message-data-description">已加载的历史消息记录 · JSON</p>
+          </div>
+          <button id="close-message-data" class="icon-button" type="button" aria-label="关闭消息数据">×</button>
+        </div>
+        <pre id="message-data-json" tabindex="0" aria-label="历史消息 JSON"></pre>
+        <div class="dialog-actions">
+          <span id="message-data-copy-status" role="status" aria-live="polite"></span>
+          <span class="dialog-spacer"></span>
+          <button id="copy-message-data" class="secondary-button" type="button">复制 JSON</button>
+          <button id="dismiss-message-data" class="primary-button" type="button">关闭</button>
+        </div>
+      </div>
+    </dialog>
+
     <div id="context-menu" class="context-menu hidden" role="menu"></div>
     <div id="toast" class="toast" role="status"></div>
-    <script type="module" src="/app.js?v=26"></script>
+    <script type="importmap">{"imports":{"markdown-it/browser":"/vendor/markdown-it.js?v=15.0.3"}}</script>
+    <script type="module" src="/app.js?v=29"></script>
   </body>
 </html>

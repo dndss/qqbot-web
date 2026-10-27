@@ -34,6 +34,7 @@ export interface ForwardMessagePart {
 
 export type MessagePart =
   | { type: 'text'; text: string }
+  | { type: 'markdown'; text: string }
   | { type: 'image'; url?: string; localUrl?: string; name?: string; description?: string }
   | { type: 'face'; id: string; text?: string }
   | { type: 'at'; userId: string; name?: string }

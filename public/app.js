@@ -1,3 +1,5 @@
+import { appendMarkdown } from './markdown.js?v=2'
+
 const state = {
   accounts: [],
   conversations: [],
@@ -296,6 +298,9 @@ function renderMessagePart(container, part, downloadContext) {
     case 'text':
       container.append(document.createTextNode(String(part.text || '')))
       break
+    case 'markdown':
+      appendMarkdown(container, String(part.text || ''), { onCommand: insertMarkdownCommand })
+      break
     case 'image': {
       const localUrl = safeMediaUrl(part.localUrl)
       const remoteUrl = safeMediaUrl(part.url)
@@ -421,15 +426,46 @@ function renderMessageContent(container, message) {
     return
   }
   if (!Array.isArray(message.parts) || message.parts.length === 0) {
-    container.textContent = message.content
+    if (message.direction === 'incoming') appendMarkdown(container, message.content, { onCommand: insertMarkdownCommand })
+    else container.textContent = message.content
     return
   }
   container.classList.add('has-rich-content')
   const downloadContext = { message, accountId: state.status.account?.id, videoIndex: 0, audioIndex: 0 }
+  let textParts = []
+  const flushText = () => {
+    if (!textParts.length) return
+    appendMarkdown(container, textParts, { onCommand: insertMarkdownCommand, inline: message.parts.some((part) => part.type === 'face') })
+    textParts = []
+  }
   for (const part of message.parts) {
     if (part.type === 'reply' && (message.refMsgIdx || part.messageId)) continue
+    if (message.direction === 'incoming' && ['text', 'markdown', 'at'].includes(part.type)) {
+      textParts.push(part)
+      continue
+    }
+    flushText()
     renderMessagePart(container, part, downloadContext)
   }
+  flushText()
+}
+
+function insertMarkdownCommand(command) {
+  const input = elements.messageInput
+  const start = input.selectionStart ?? input.value.length
+  const end = input.selectionEnd ?? start
+  if (input.value.length - (end - start) + command.length > input.maxLength) {
+    showToast('输入内容已达到长度限制', true)
+    return
+  }
+  if (state.pendingMediaType && (state.pendingMediaType !== 'image' || state.composerFormat !== 'text')) {
+    clearAttachmentFields()
+    showToast('已切换到文字输入，媒体附件已移除')
+  }
+  input.setRangeText(command, start, end, 'end')
+  updateComposerMode()
+  input.focus()
+  input.dispatchEvent(new Event('input', { bubbles: true }))
 }
 
 function uploadStatusText(message) {
@@ -501,7 +537,7 @@ function selectedMessageText(row) {
   return ''
 }
 
-async function copyMessageText(text) {
+async function copyMessageText(text, container = document.body) {
   if (!text) throw new Error('没有可复制的内容')
   try {
     if (!navigator.clipboard?.writeText) throw new Error('Clipboard API unavailable')
@@ -515,7 +551,7 @@ async function copyMessageText(text) {
     textarea.value = text
     textarea.readOnly = true
     textarea.className = 'clipboard-copy-buffer'
-    document.body.append(textarea)
+    container.append(textarea)
     let copied = false
     try {
       textarea.focus({ preventScroll: true })
@@ -534,6 +570,43 @@ async function copyMessageText(text) {
   }
   showToast('已复制')
 }
+
+function closeMessageData() {
+  if (elements.messageDataDialog.open) elements.messageDataDialog.close()
+}
+
+function showMessageData(message) {
+  // 查询时附带的引用摘要和上传界面状态不属于历史记录。
+  const { reference, uploadState, uploadError, ...record } = message
+  elements.messageDataJson.textContent = JSON.stringify(record, null, 2)
+  elements.messageDataCopyStatus.textContent = ''
+  elements.messageDataDialog.dataset.messageId = message.id
+  elements.messageDataDialog.dataset.conversationId = message.conversationId
+  if (!elements.messageDataDialog.open) elements.messageDataDialog.showModal()
+  elements.messageDataJson.scrollTop = 0
+}
+
+elements.closeMessageData.addEventListener('click', closeMessageData)
+elements.dismissMessageData.addEventListener('click', closeMessageData)
+elements.messageDataDialog.addEventListener('click', (event) => {
+  if (event.target === elements.messageDataDialog) closeMessageData()
+})
+elements.messageDataDialog.addEventListener('close', () => {
+  if (elements.messageDataDialog.open) return
+  elements.messageDataJson.textContent = ''
+  elements.messageDataCopyStatus.textContent = ''
+  delete elements.messageDataDialog.dataset.messageId
+  delete elements.messageDataDialog.dataset.conversationId
+})
+elements.copyMessageData.addEventListener('click', async () => {
+  const json = elements.messageDataJson.textContent
+  try {
+    await copyMessageText(json, elements.messageDataDialog)
+    if (elements.messageDataDialog.open && elements.messageDataJson.textContent === json) elements.messageDataCopyStatus.textContent = 'JSON 已复制'
+  } catch (error) {
+    if (elements.messageDataDialog.open && elements.messageDataJson.textContent === json) elements.messageDataCopyStatus.textContent = error.message
+  }
+})
 
 function renderReplyPreview() {
   const target = state.replyTarget
@@ -745,6 +818,11 @@ function openMessageMenu(event, message, anchor, selectedTextBeforeMenu) {
     showContextMenu(event, actions, anchor)
     return
   }
+  actions.push({ label: '查看消息数据', run: () => {
+    const current = state.messages.find((item) => item.id === message.id && item.conversationId === message.conversationId)
+    if (!current) throw new Error('消息已不在当前历史记录中，请重新打开会话')
+    showMessageData(current)
+  } })
   if (message.status !== 'recalled') actions.push(null)
   const conversation = state.conversations.find((item) => item.id === message.conversationId)
   const targetIsManager = (message.roles || []).some((role) => role === 'owner' || role === 'admin')
@@ -846,6 +924,7 @@ function renderAccounts() {
 }
 
 function applyAccountSnapshot(snapshot) {
+  closeMessageData()
   stopAllAudioPlayers()
   state.accounts = snapshot.accounts || []
   state.conversations = snapshot.conversations || []
@@ -1346,6 +1425,7 @@ async function loadConversations() {
 }
 
 async function selectConversation(id) {
+  closeMessageData()
   stopAllAudioPlayers()
   const shouldOpenMobileHistory = window.innerWidth < 760 && !document.body.classList.contains('mobile-chat-open')
   const loadToken = ++state.messageLoadToken
@@ -1861,6 +1941,8 @@ eventSource.addEventListener('message-update', async (event) => {
     const index = state.messages.findIndex((item) => item.id === updated.id)
     if (index >= 0) state.messages[index] = updated
     else state.messages.push(updated)
+    if (elements.messageDataDialog.open && elements.messageDataDialog.dataset.messageId === updated.id
+      && elements.messageDataDialog.dataset.conversationId === updated.conversationId) showMessageData(updated)
     renderMessages()
   }
   await loadConversations()

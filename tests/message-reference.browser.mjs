@@ -9,12 +9,23 @@ import { fileURLToPath, pathToFileURL } from 'node:url'
 import { createReferenceFixture } from './reference-fixture.ts'
 import { handleMediaDownload } from '../src/media-download.ts'
 import { amrBytes, audioName, officialAudioPart, wavBytes } from './audio-fixture.ts'
+import { officialMenuParts } from './markdown-fixture.ts'
 
 const playwright = await import(process.env.PLAYWRIGHT_MODULE
   ? pathToFileURL(process.env.PLAYWRIGHT_MODULE).href
   : 'playwright')
 const { chromium } = playwright.default ?? playwright
 const fixture = await createReferenceFixture()
+const markdownSource = '# Markdown 消息\n\n**粗体**、*斜体*、~~删除线~~，还有 `代码`。\n下一行\n\n- 列表一\n- 列表二\n\n> 引用内容\n\n| 名称 | 状态 |\n| --- | --- |\n| 渲染 | 完成 |\n\n[示例链接](https://example.com) <qqbot-at-user id="test-user" />\n\n![#1200 #800](/test-markdown-image.svg)\n\n![失效图片](/test-markdown-missing.png)\n\n<img src=x onerror="window.markdownUnsafe=true">'
+const outgoingMarkdown = '# 机器人回复\n\n**渲染成功**\n\n> 支持引用和链接\n\n```js\nconst example = "' + '长代码'.repeat(100) + '"\n```\n\n![#120 #80](/test-markdown-image.svg)'
+await fixture.store.updateMessage(fixture.conversation.id, 'message-429', { direction: 'incoming', content: markdownSource, parts: [{ type: 'markdown', text: markdownSource }] })
+await fixture.store.updateMessage(fixture.conversation.id, 'message-428', { direction: 'outgoing', content: outgoingMarkdown, parts: [{ type: 'markdown', text: outgoingMarkdown }] })
+await fixture.store.updateMessage(fixture.conversation.id, 'message-427', { content: '**普通文本**', parts: [{ type: 'text', text: '**普通文本**' }] })
+const menuParts = officialMenuParts()
+const menuContent = menuParts.map((part) => part.type === 'at' ? `@${part.name}` : part.type === 'text' ? part.text : '').join('')
+await fixture.store.updateMessage(fixture.conversation.id, 'message-426', { content: menuContent, parts: menuParts })
+await fixture.store.updateMessage(fixture.conversation.id, 'message-424', { content: '# 历史文本也能渲染\n\n**历史粗体**' })
+await fixture.store.updateMessage(fixture.conversation.id, 'message-422', { content: '前[表情]后', parts: [{ type: 'text', text: '前' }, { type: 'face', id: '0' }, { type: 'text', text: '后' }] })
 const videoName = '3e80857c0172a44d9eeeea9fcb92c6ac.mp4'
 const videoBytes = Buffer.concat([
   Buffer.from('000000206674797069736f6d0000020069736f6d69736f32617663316d703431', 'hex'),
@@ -62,6 +73,7 @@ await fixture.store.selectAccount(primaryAccountId)
 let referenceRequests = 0
 let delayReference = false
 let failPlayback = false
+let messageSendRequests = 0
 const streamRequests = []
 const eventStreams = new Set()
 const broadcast = (event, payload) => {
@@ -76,6 +88,11 @@ const server = createServer(async (request, response) => {
       response.writeHead(code, { 'Content-Type': 'application/json' })
       response.end(JSON.stringify(value))
     }
+    if (url.pathname === '/test-markdown-image.svg') {
+      response.writeHead(200, { 'Content-Type': 'image/svg+xml' })
+      return response.end('<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800" viewBox="0 0 1200 800"><rect width="1200" height="800" fill="#e5f2ff"/><circle cx="600" cy="350" r="150" fill="#268cf1"/><text x="600" y="650" text-anchor="middle" font-size="60" fill="#172033">QQ Markdown Image</text></svg>')
+    }
+    if (url.pathname === '/test-markdown-missing.png') { response.writeHead(404); return response.end() }
     if (url.pathname === '/api/status') return json(200, currentStatus())
     if (url.pathname === '/api/accounts') return json(200, fixture.store.listAccounts())
     if (url.pathname === '/api/conversations') return json(200, fixture.store.listConversations())
@@ -123,12 +140,14 @@ const server = createServer(async (request, response) => {
       })
     }
     const messages = url.pathname.match(/^\/api\/conversations\/([^/]+)\/messages$/)
+    if (messages && request.method === 'POST') { messageSendRequests++; return json(409, { error: 'Test does not send messages' }) }
     if (messages) return json(200, fixture.store.listMessagesPage(
       decodeURIComponent(messages[1]), 200, url.searchParams.get('before') || undefined,
     ))
     if (url.pathname.endsWith('/read')) return json(200, { ok: true })
-    const path = resolve(publicDirectory, url.pathname === '/' ? 'index.html' : url.pathname.slice(1))
-    assert.ok(path.startsWith(`${publicDirectory}\\`) || path.startsWith(`${publicDirectory}/`))
+    const vendor = url.pathname === '/vendor/markdown-it.js'
+    const path = vendor ? fileURLToPath(import.meta.resolve('markdown-it/browser')) : resolve(publicDirectory, url.pathname === '/' ? 'index.html' : url.pathname.slice(1))
+    if (!vendor) assert.ok(path.startsWith(`${publicDirectory}\\`) || path.startsWith(`${publicDirectory}/`))
     const body = await readFile(path)
     response.writeHead(200, { 'Content-Type': path.endsWith('.html') ? 'text/html' : path.endsWith('.css') ? 'text/css' : 'text/javascript' })
     response.end(body)
@@ -146,6 +165,10 @@ const browser = await chromium.launch({
 })
 const errors = []
 const page = await browser.newPage({ viewport: { width: 1440, height: 900 } })
+const mockMenuImages = (target) => target.route('https://qqbot.ugcimg.cn/**', (route) => route.fulfill({
+  contentType: 'image/svg+xml', body: '<svg xmlns="http://www.w3.org/2000/svg" width="1200" height="800"><rect width="1200" height="800" fill="#268cf1"/></svg>',
+}))
+await mockMenuImages(page)
 await page.addInitScript(() => {
   // 验证复制内容，不修改用户的系统剪贴板。
   Object.defineProperty(navigator, 'clipboard', {
@@ -173,7 +196,159 @@ const selectFixture = async () => {
   await row('message-449').waitFor()
   assert.equal(streamRequests.length, before, 'preload=none must not request playback before user interaction')
 }
+const openMessageData = async (id) => {
+  if (page.viewportSize().width <= 760) {
+    const more = row(id).getByRole('button', { name: '操作 Test sender 的消息', exact: true })
+    await more.scrollIntoViewIfNeeded()
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    await more.click()
+  } else {
+    const bubble = row(id).locator('.message-bubble')
+    await bubble.scrollIntoViewIfNeeded()
+    await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+    await bubble.click({ button: 'right' })
+  }
+  await page.locator('#context-menu').getByRole('button', { name: '查看消息数据', exact: true }).click()
+  await page.getByRole('dialog', { name: '消息数据', exact: true }).waitFor()
+}
+const verifyMessageData = async () => {
+  const dialog = page.getByRole('dialog', { name: '消息数据', exact: true })
+  const json = dialog.locator('#message-data-json')
+  for (const id of ['message-426', 'message-440', 'message-437', 'message-434', 'message-428']) {
+    await openMessageData(id)
+    const text = await json.textContent()
+    assert.equal(text, JSON.stringify(fixture.store.getMessage(fixture.conversation.id, id), null, 2))
+    assert.equal(Object.hasOwn(JSON.parse(text), 'reference'), false)
+    assert.equal(await json.locator('img, script').count(), 0, 'JSON is displayed as text')
+    await dialog.getByRole('button', { name: '复制 JSON', exact: true }).click()
+    assert.equal(await page.evaluate(() => window.testCopiedText), text)
+    await dialog.getByRole('status').filter({ hasText: 'JSON 已复制' }).waitFor()
+    const bounds = await dialog.boundingBox()
+    assert.ok(bounds.x >= 0 && bounds.y >= 0 && bounds.x + bounds.width <= page.viewportSize().width && bounds.y + bounds.height <= page.viewportSize().height)
+    if (id === 'message-426') await page.screenshot({ path: join(outputDirectory, `message-data-${page.viewportSize().width}.png`) })
+    await dialog.getByRole('button', { name: '关闭', exact: true }).click()
+    await dialog.waitFor({ state: 'hidden' })
+    await page.waitForFunction(() => document.getElementById('message-data-json').textContent === '')
+  }
+  await openMessageData('message-426')
+  const recalled = await fixture.store.updateMessage(fixture.conversation.id, 'message-426', { status: 'recalled' })
+  broadcast('message-update', recalled)
+  await page.waitForFunction(() => JSON.parse(document.getElementById('message-data-json').textContent).status === 'recalled')
+  await page.keyboard.press('Escape')
+  await dialog.waitFor({ state: 'hidden' })
+  const restored = await fixture.store.updateMessage(fixture.conversation.id, 'message-426', { status: 'received' })
+  broadcast('message-update', restored)
+  await row('message-426').locator('h1').waitFor()
+
+  // A modal makes the rest of the page inert: the fallback textarea must be inside it.
+  await openMessageData('message-426')
+  const text = await json.textContent()
+  await page.evaluate(() => {
+    window.savedDataClipboard = navigator.clipboard
+    window.savedDataExecCommand = document.execCommand
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: undefined })
+    document.execCommand = (command) => {
+      window.testCopiedText = document.activeElement.value
+      window.copyBufferInDialog = document.activeElement.closest('dialog')?.id === 'message-data-dialog'
+      return command === 'copy'
+    }
+  })
+  await dialog.getByRole('button', { name: '复制 JSON', exact: true }).click()
+  assert.equal(await page.evaluate(() => window.testCopiedText), text)
+  assert.equal(await page.evaluate(() => window.copyBufferInDialog), true)
+  assert.equal(await page.locator('.clipboard-copy-buffer').count(), 0)
+  await page.evaluate(() => { document.execCommand = () => false })
+  await dialog.getByRole('button', { name: '复制 JSON', exact: true }).click()
+  await dialog.getByRole('status').filter({ hasText: '复制失败，请检查浏览器剪贴板权限' }).waitFor()
+  assert.equal(await page.locator('.clipboard-copy-buffer').count(), 0)
+  await page.evaluate(() => {
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: window.savedDataClipboard })
+    document.execCommand = window.savedDataExecCommand
+  })
+  broadcast('reset', { accounts: fixture.store.listAccounts(), conversations: fixture.store.listConversations(), status: currentStatus() })
+  await dialog.waitFor({ state: 'hidden' })
+  await page.waitForFunction(() => document.getElementById('message-data-json').textContent === '')
+}
 try {
+  await selectFixture()
+  for (const width of [1440, 390]) {
+    await page.setViewportSize({ width, height: width === 390 ? 844 : 1100 })
+    await selectFixture()
+    const incoming = row('message-429').locator('.message-markdown')
+    const outgoing = row('message-428').locator('.message-markdown')
+    assert.equal(await incoming.locator('h1').textContent(), 'Markdown 消息')
+    assert.equal(await incoming.locator('strong').textContent(), '粗体')
+    assert.equal(await incoming.locator('table tbody tr').count(), 1)
+    assert.equal(await incoming.locator('.message-mention').textContent(), '@test-user')
+    assert.equal(await incoming.locator('img[onerror], script').count(), 0)
+    assert.equal(await page.evaluate(() => window.markdownUnsafe), undefined)
+    assert.equal(await row('message-427').locator('.message-bubble').textContent(), '**普通文本**')
+    assert.equal(await row('message-427').locator('strong').count(), 0)
+    const image = incoming.locator('img')
+    await image.first().scrollIntoViewIfNeeded()
+    await page.waitForFunction(() => document.querySelector('[data-message-id="message-429"] .message-media-fallback'))
+    assert.equal(await image.count(), 1)
+    assert.equal(await image.getAttribute('width'), '1200')
+    assert.equal(await image.getAttribute('height'), '800')
+    assert.equal(await image.getAttribute('src'), '/test-markdown-image.svg')
+    const imageBounds = await image.boundingBox()
+    const bubbleBounds = await row('message-429').locator('.message-bubble').boundingBox()
+    assert.ok(imageBounds.width <= bubbleBounds.width)
+    await incoming.locator('h1').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: join(outputDirectory, `markdown-incoming-${width}.png`) })
+    await outgoing.scrollIntoViewIfNeeded()
+    const code = outgoing.locator('pre')
+    assert.ok(await code.evaluate((element) => element.scrollWidth > element.clientWidth), 'long code scrolls within the bubble')
+    const bounds = await row('message-428').locator('.message-bubble').boundingBox()
+    assert.ok(bounds.x >= 0 && bounds.x + bounds.width <= width)
+    await page.screenshot({ path: join(outputDirectory, `markdown-outgoing-${width}.png`) })
+    const menu = row('message-426').locator('.message-markdown')
+    assert.equal(await menu.locator('h1').textContent(), '# 🍹伊蕾娜菜单(*´∀`)~♥'.slice(2))
+    assert.equal(await menu.locator('blockquote .message-mention').textContent(), '@测试成员')
+    assert.equal(await menu.getByRole('button').count(), 7)
+    assert.equal(await menu.locator('hr').count(), 1)
+    assert.equal(await menu.locator('a[href^="mqqapi:"]').count(), 0)
+    assert.equal(await menu.locator('img[width="20"][height="20"][alt="伊蕾娜"]').count(), 2)
+    await menu.locator('img').first().scrollIntoViewIfNeeded()
+    const iconBounds = await menu.locator('img').first().boundingBox()
+    assert.equal(iconBounds.width, 20)
+    assert.equal(iconBounds.height, 20)
+    assert.equal(await row('message-424').locator('h1').textContent(), '历史文本也能渲染')
+    const face = row('message-422').locator('.message-face')
+    const faceText = row('message-422').locator('.message-markdown').first()
+    assert.ok(Math.abs((await face.boundingBox()).y - (await faceText.boundingBox()).y) < 20, 'text and QQ faces stay on the same line')
+    const input = page.locator('#message-input')
+    await input.fill('前后')
+    await input.evaluate((element) => element.setSelectionRange(1, 1))
+    const beforeUrl = page.url()
+    const beforePages = page.context().pages().length
+    await menu.getByRole('button', { name: '娱乐菜单', exact: true }).click()
+    assert.equal(await input.inputValue(), '前娱乐菜单后')
+    assert.equal(await input.evaluate((element) => element.selectionStart), 5)
+    assert.equal(page.url(), beforeUrl)
+    assert.equal(page.context().pages().length, beforePages)
+    assert.equal(messageSendRequests, 0, 'menu clicks never send messages')
+    await page.getByRole('button', { name: '通过 URL 发送视频', exact: true }).click()
+    await menu.getByRole('button', { name: '小游戏', exact: true }).click()
+    assert.equal(await input.isVisible(), true)
+    assert.equal(await input.inputValue(), '前娱乐菜单小游戏后')
+    assert.equal(messageSendRequests, 0)
+    await input.fill('x'.repeat(1999))
+    await menu.getByRole('button', { name: '娱乐菜单', exact: true }).click()
+    assert.equal(await input.inputValue(), 'x'.repeat(1999))
+    await page.getByRole('status').filter({ hasText: '输入内容已达到长度限制' }).waitFor()
+    await input.fill('')
+    await menu.locator('h1').scrollIntoViewIfNeeded()
+    await page.screenshot({ path: join(outputDirectory, `qq-menu-${width}.png`) })
+    await verifyMessageData()
+  }
+  await page.setViewportSize({ width: 1440, height: 900 })
+  await selectFixture()
+  await row('message-429').locator('h1').scrollIntoViewIfNeeded()
+  await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))))
+  await row('message-429').locator('h1').click({ button: 'right' })
+  await page.locator('#context-menu').getByRole('button', { name: '复制整条消息', exact: true }).click()
+  assert.equal(await page.evaluate(() => window.testCopiedText), markdownSource)
   await selectFixture()
   assert.equal(await page.locator('.message-row').count(), 200)
   assert.equal(await row('message-030').count(), 0)
@@ -464,6 +639,7 @@ try {
   assert.equal(await page.evaluate(() => window.testCopiedText), 'Message 30')
 
   const touchPage = await browser.newPage({ viewport: { width: 390, height: 844 }, isMobile: true, hasTouch: true })
+  await mockMenuImages(touchPage)
   touchPage.on('pageerror', (error) => errors.push(String(error)))
   await touchPage.addInitScript(() => {
     Object.defineProperty(navigator, 'clipboard', {
@@ -540,6 +716,16 @@ try {
   assert.equal(await touchCopySelected.isDisabled(), true)
   await touchCopyWhole.tap()
   assert.equal(await touchPage.evaluate(() => window.testCopiedText), 'First line\nSecond line [图片]')
+  await touchMore.tap()
+  await touchMenu.getByRole('button', { name: '查看消息数据', exact: true }).tap()
+  const touchData = touchPage.getByRole('dialog', { name: '消息数据', exact: true })
+  await touchData.waitFor()
+  const touchJson = await touchData.locator('#message-data-json').textContent()
+  assert.equal(JSON.parse(touchJson).id, 'message-449')
+  assert.equal(await touchData.getByRole('button', { name: '复制 JSON', exact: true }).evaluate((button) => button.getBoundingClientRect().height >= 44), true)
+  await touchData.getByRole('button', { name: '复制 JSON', exact: true }).tap()
+  assert.equal(await touchPage.evaluate(() => window.testCopiedText), touchJson)
+  await touchData.getByRole('button', { name: '关闭', exact: true }).tap()
   await touchPage.setViewportSize({ width: 1024, height: 768 })
   await touchMore.scrollIntoViewIfNeeded()
   assert.equal(await touchMore.isVisible(), true)
@@ -558,7 +744,7 @@ try {
   assert.equal(await page.locator('.message-row').count(), 2)
   assert.equal(await page.locator('.message-highlighted').count(), 0)
   assert.deepEqual(errors, [])
-  console.log('Browser checks passed: WAV playback/seek/single audio/refresh/recall/account switch/retry; audio/video downloads; desktop/mobile/touch; references and copy regression.')
+  console.log('Browser checks passed: Markdown formatting/QQ images/mentions/safety/layout/source copy; WAV playback/seek/single audio/refresh/recall/account switch/retry; audio/video downloads; desktop/mobile/touch; references and copy regression.')
   console.log(`Screenshots: ${outputDirectory}`)
 } finally {
   await browser.close()

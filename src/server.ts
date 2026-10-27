@@ -158,7 +158,7 @@ async function normalizeMessagePart(
       return normalizeMediaPart(type, data)
     case 'markdown': {
       const text = String(data.content ?? '')
-      return text ? { type: 'text', text } : { type: 'unsupported', label: '[Markdown 消息]' }
+      return text ? { type: 'markdown', text } : { type: 'unsupported', label: '[Markdown 消息]' }
     }
     case 'forward':
       {
@@ -179,7 +179,8 @@ async function normalizeMessageParts(event: IncomingMessageLike, accountId: stri
 function messagePreview(parts: MessagePart[]): string {
   return parts.map((part) => {
     switch (part.type) {
-      case 'text': return part.text
+      case 'text':
+      case 'markdown': return part.text
       case 'image': return part.description || '[图片]'
       case 'face': return part.text || `[表情${part.id ? ` ${part.id}` : ''}]`
       case 'at': return `@${part.name || (part.userId === 'all' ? '所有人' : shortId(part.userId))}`
@@ -637,7 +638,7 @@ async function sendMessage(conversation: Conversation, input: SendMessageInput):
     ? `[${mediaUploadLimits[input.media.type].label}${input.media.name ? `：${input.media.name}` : ''}]`
     : ''
   const parts: MessagePart[] = [
-    ...(input.content ? [{ type: 'text' as const, text: input.content }] : []),
+    ...(input.content ? [{ type: input.type === 'markdown' ? 'markdown' as const : 'text' as const, text: input.content }] : []),
     ...(input.media ? [{
       type: input.media.type,
       ...(input.media.source.startsWith('http') ? { url: input.media.source } : {}),
@@ -998,6 +999,7 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
 const mimeTypes: Record<string, string> = {
   '.html': 'text/html; charset=utf-8',
   '.js': 'text/javascript; charset=utf-8',
+  '.mjs': 'text/javascript; charset=utf-8',
   '.css': 'text/css; charset=utf-8',
   '.svg': 'image/svg+xml',
   '.png': 'image/png',
@@ -1007,7 +1009,9 @@ const mimeTypes: Record<string, string> = {
 async function serveStatic(response: ServerResponse, pathname: string): Promise<void> {
   const requested = pathname === '/' ? 'index.html' : pathname.slice(1)
   const safePath = normalize(requested).replace(/^(\.\.[/\\])+/, '')
-  const path = join(publicDirectory, safePath)
+  const path = pathname === '/vendor/markdown-it.js'
+    ? fileURLToPath(import.meta.resolve('markdown-it/browser'))
+    : join(publicDirectory, safePath)
   try {
     const body = await readFile(path)
     response.writeHead(200, {
