@@ -2,6 +2,9 @@ import { appendMarkdown } from './markdown.js?v=2'
 
 const state = {
   accounts: [],
+  accountGeneration: 0,
+  detailRefresh: null,
+  memberRemovals: new Set(),
   conversations: [],
   selectedId: null,
   messages: [],
@@ -806,6 +809,36 @@ async function muteFromMenu(message, durationMinutes) {
   showToast(result.mutedUntil ? `已禁言至 ${formatDateTime(result.mutedUntil)}` : '已解除禁言')
 }
 
+function memberRemovalAction(message, conversation) {
+  if (conversation?.type !== 'group' || message.direction !== 'incoming' || !message.senderOpenid
+    || (message.roles || []).some((role) => role === 'owner' || role === 'admin')
+    || message.senderOpenid === conversation.botState?.memberOpenid) return []
+  const key = JSON.stringify([state.status.account?.id, conversation.id, message.senderOpenid])
+  return [null, {
+    label: '移出群聊…', danger: true,
+    disabled: state.status.state !== 'connected' || state.memberRemovals.has(key),
+    run: () => removeMemberFromMenu(message, conversation, key),
+  }]
+}
+
+async function removeMemberFromMenu(message, conversation, key) {
+  const accountId = state.status.account?.id
+  const generation = state.accountGeneration
+  if (!accountId || state.selectedId !== conversation.id || state.memberRemovals.has(key)) return
+  if (!window.confirm(`确定将“${message.senderName}”移出“${conversation.title}”？\n成员 OpenID：${message.senderOpenid}\n此操作会实际移除群成员，聊天记录会保留。`)) return
+  state.memberRemovals.add(key)
+  try {
+    await api(`/api/conversations/${encodeURIComponent(conversation.id)}/members/${encodeURIComponent(message.id)}/remove`, {
+      method: 'POST', body: JSON.stringify({ accountId, confirmed: true }),
+    })
+    if (state.accountGeneration === generation && state.selectedId === conversation.id) showToast('成员已移出群聊，聊天记录已保留')
+  } catch (error) {
+    if (state.accountGeneration === generation && state.selectedId === conversation.id) throw error
+  } finally {
+    state.memberRemovals.delete(key)
+  }
+}
+
 function openMessageMenu(event, message, anchor, selectedTextBeforeMenu) {
   const row = (anchor || event.currentTarget)?.closest('.message-row')
   // 打开菜单后焦点可能改变选区，必须提前保留选中的文本。
@@ -859,6 +892,7 @@ function openMessageMenu(event, message, anchor, selectedTextBeforeMenu) {
       { label: '解除禁言', run: () => muteFromMenu(message, 0) },
     )
   }
+  actions.push(...memberRemovalAction(message, conversation))
   if (actions.length) showContextMenu(event, actions, anchor)
 }
 
@@ -882,6 +916,7 @@ function openAvatarMenu(event, message) {
       },
     },
     { label: '解除禁言', run: () => muteFromMenu(message, 0) },
+    ...memberRemovalAction(message, conversation),
   ])
 }
 
@@ -899,7 +934,7 @@ function renderStatus() {
   elements.connectionButton.textContent = state.status.state === 'connected' ? '断开' : '连接'
   elements.connectionButton.disabled = state.status.state === 'connecting'
   elements.sendButton.disabled = state.status.state !== 'connected'
-  elements.refreshBotState.disabled = state.status.state !== 'connected'
+  renderDetailRefreshButton()
 }
 
 function renderAccounts() {
@@ -924,6 +959,8 @@ function renderAccounts() {
 }
 
 function applyAccountSnapshot(snapshot) {
+  state.accountGeneration += 1
+  state.detailRefresh = null
   closeMessageData()
   stopAllAudioPlayers()
   state.accounts = snapshot.accounts || []
@@ -1383,7 +1420,7 @@ function renderSelectedConversation() {
   renderAvatar(elements.detailAvatar, conversation.title, conversation.avatarUrl)
   elements.detailTitle.textContent = conversation.title
   elements.detailSubtitle.textContent = conversation.subtitle
-  elements.refreshBotState.classList.toggle('hidden', conversation.type !== 'group')
+  renderDetailRefreshButton()
   elements.detailList.replaceChildren()
   const details = [['会话类型', typeLabels[conversation.type]], ['目标 OpenID', conversation.targetId]]
   if (conversation.type === 'group') {
@@ -1400,6 +1437,15 @@ function renderSelectedConversation() {
       details.push(['状态更新时间', formatDateTime(conversation.botState.updatedAt)])
     } else {
       details.push(['机器人群内状态', '尚未获取，可点击刷新状态'])
+    }
+  }
+  if (conversation.type === 'private') {
+    if (conversation.userProfile) {
+      details.push(['用户昵称', conversation.userProfile.username || '未提供'])
+      details.push(['允许主动消息', conversation.userProfile.allowProactiveMsg ? '是' : '否'])
+      details.push(['资料更新时间', formatDateTime(conversation.userProfile.updatedAt)])
+    } else {
+      details.push(['用户资料', '尚未获取，点击“获取资料”；需要与机器人存在好友关系'])
     }
   }
   for (const [label, value] of details) {
@@ -1661,23 +1707,38 @@ elements.accountSelect.addEventListener('change', async () => {
   }
 })
 
+function renderDetailRefreshButton() {
+  const conversation = state.conversations.find((item) => item.id === state.selectedId)
+  elements.refreshBotState.classList.toggle('hidden', !conversation)
+  const busy = state.detailRefresh?.conversationId === conversation?.id
+  elements.refreshBotState.disabled = state.status.state !== 'connected' || Boolean(state.detailRefresh)
+  elements.refreshBotState.textContent = busy ? '刷新中…' : conversation?.type === 'private'
+    ? (conversation.userProfile ? '刷新资料' : '获取资料') : '刷新状态'
+}
+
 elements.refreshBotState.addEventListener('click', async () => {
   const conversation = state.conversations.find((item) => item.id === state.selectedId)
-  if (!conversation || conversation.type !== 'group') return
-  elements.refreshBotState.disabled = true
-  elements.refreshBotState.textContent = '刷新中…'
+  const accountId = state.status.account?.id
+  if (!conversation || !accountId || state.detailRefresh) return
+  const task = { conversationId: conversation.id, generation: state.accountGeneration }
+  state.detailRefresh = task
+  renderDetailRefreshButton()
   try {
-    const updated = await api(`/api/conversations/${encodeURIComponent(conversation.id)}/bot-state`, { method: 'POST' })
+    const endpoint = conversation.type === 'private' ? 'user-profile' : 'bot-state'
+    const updated = await api(`/api/conversations/${encodeURIComponent(conversation.id)}/${endpoint}`, {
+      method: 'POST', body: JSON.stringify({ accountId }),
+    })
+    if (state.accountGeneration !== task.generation) return
     const index = state.conversations.findIndex((item) => item.id === updated.id)
     if (index >= 0) state.conversations[index] = updated
     renderConversations()
     renderSelectedConversation()
-    showToast('机器人群内状态已刷新')
+    if (state.selectedId === conversation.id) showToast(conversation.type === 'private' ? '用户资料已刷新' : '机器人群内状态已刷新')
   } catch (error) {
-    showToast(error.message, true)
+    if (state.accountGeneration === task.generation && state.selectedId === conversation.id) showToast(error.message, true)
   } finally {
-    elements.refreshBotState.textContent = '刷新状态'
-    elements.refreshBotState.disabled = state.status.state !== 'connected'
+    if (state.detailRefresh === task) state.detailRefresh = null
+    renderDetailRefreshButton()
   }
 })
 

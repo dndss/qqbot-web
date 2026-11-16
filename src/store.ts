@@ -251,6 +251,12 @@ export class JsonStore {
     const nextConversation: Conversation = {
       ...existing,
       ...conversation,
+      // 手动刷新的联系人资料独立于消息快照，后续消息不能覆盖它。
+      ...(conversation.type === 'private' && existing?.userProfile ? {
+        userProfile: existing.userProfile,
+        title: existing.userProfile.username || conversation.title,
+        avatarUrl: existing.userProfile.avatar || conversation.avatarUrl,
+      } : {}),
       unread: message.direction === 'incoming' ? (existing?.unread ?? 0) + 1 : (existing?.unread ?? 0),
       lastMessage: message.content,
       updatedAt: message.timestamp,

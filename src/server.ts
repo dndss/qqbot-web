@@ -63,6 +63,10 @@ const pendingMessages = new Set<Promise<void>>()
 const groupProfileRequests = new Map<string, Promise<Partial<Conversation>>>()
 const groupBotStateRequests = new Map<string, Promise<GroupBotState>>()
 const forwardCacheRequests = new Map<string, Promise<void>>()
+const userProfileRequests = new Map<string, Promise<Conversation>>()
+const memberRemovalRequests = new Set<string>()
+const userProfileCallTimes = new WeakMap<Bot, number>()
+const memberRemovalCallTimes = new WeakMap<Bot, number>()
 
 await store.initialize()
 
@@ -346,7 +350,8 @@ async function getGroupDetails(
 
 async function normalizeIncoming(event: IncomingMessageLike, accountId: string): Promise<{ conversation: Conversation; message: StoredMessage } | null> {
   const senderId = event.sender?.user_id ?? event.user_id ?? 'unknown'
-  const senderName = event.sender?.user_name || `用户 ${shortId(senderId)}`
+  const senderName = (event.message_type === 'group' ? event.sender?.member_nickname : undefined)
+    || event.sender?.user_name || `用户 ${shortId(senderId)}`
   const senderOpenid = event.sender?.user_openid || senderId
   const senderAvatarUrl = openidAvatarUrl(senderOpenid)
   let type: ConversationType
@@ -371,6 +376,8 @@ async function normalizeIncoming(event: IncomingMessageLike, accountId: string):
   }
 
   const conversationId = `${type}:${targetId}`
+  const userProfile = type === 'private' ? store.getConversation(conversationId)?.userProfile : undefined
+  if (userProfile) title = userProfile.username || title
   const timestamp = event.timestamp ? event.timestamp * 1000 : Date.now()
   const parts = await normalizeMessageParts(event, accountId)
   const content = messagePreview(parts) || event.raw_message?.trim() || '[暂不支持展示的消息]'
@@ -384,7 +391,8 @@ async function normalizeIncoming(event: IncomingMessageLike, accountId: string):
       updatedAt: timestamp,
       unread: 0,
       lastMessage: content,
-      ...(type === 'private' && senderAvatarUrl ? { avatarUrl: senderAvatarUrl } : {}),
+      ...(type === 'private' && (userProfile?.avatar || senderAvatarUrl)
+        ? { avatarUrl: userProfile?.avatar || senderAvatarUrl } : {}),
       ...profile,
       title,
     },
@@ -413,7 +421,7 @@ async function handleIncoming(event: IncomingMessageLike, accountId: string): Pr
   if (accountId !== botAccountId || accountId !== store.getActiveAccount()?.id) return
   if (!normalized) return
   await store.addMessage(normalized.conversation, normalized.message)
-  publish('message', { ...normalized, message: store.withMessageReference(normalized.message) })
+  publish('message', { ...normalized, conversation: store.getConversation(normalized.conversation.id), message: store.withMessageReference(normalized.message) })
 }
 
 async function connectBot(): Promise<void> {
@@ -720,6 +728,100 @@ async function setMemberMute(
   return { ok: true, mutedUntil }
 }
 
+function requireCurrentBot(accountId: string): Bot {
+  if (!bot || connectionState !== 'connected' || shuttingDown) throw new Error('机器人尚未连接')
+  if (!accountId || accountId !== botAccountId || accountId !== store.getActiveAccount()?.id) {
+    throw new Error('Bot 账号已切换，请重新操作')
+  }
+  return bot
+}
+
+function assertCurrentOperation(instance: Bot, accountId: string, operation: number): void {
+  if (operation !== connectionOperation || requireCurrentBot(accountId) !== instance) {
+    throw new Error('Bot 连接已变化，请重新操作')
+  }
+}
+
+function checkApiInterval(times: WeakMap<Bot, number>, instance: Bot, interval: number): void {
+  const now = Date.now()
+  const previous = times.get(instance)
+  if (previous !== undefined && now - previous < interval) throw new Error('操作过于频繁，请稍后重试')
+  times.set(instance, now)
+}
+
+function sdkOperationError(error: unknown): Error {
+  const data = (error as { response?: { data?: { code?: number | string; message?: string } } })?.response?.data
+  const messages: Record<string, string> = {
+    '40184001': '用户与机器人没有好友关系，无法查询用户资料',
+    '40103012': '群主尚未开启“移除群成员”开关',
+    '40103011': '机器人管理端尚未开启“移除群成员”开关',
+  }
+  const code = data?.code === undefined ? '' : String(data.code)
+  return new Error(code ? `${messages[code] || data?.message || errorMessage(error)}（${code}）` : errorMessage(error))
+}
+
+async function refreshUserProfile(conversation: Conversation, accountId: string): Promise<Conversation> {
+  const instance = requireCurrentBot(accountId)
+  if (conversation.type !== 'private') throw new Error('只有私聊支持用户资料查询')
+  const operation = connectionOperation
+  const key = JSON.stringify([accountId, operation, conversation.id])
+  const pending = userProfileRequests.get(key)
+  if (pending) return pending
+  checkApiInterval(userProfileCallTimes, instance, 100)
+  const request = (async () => {
+    let info
+    try {
+      info = await instance.getUserInfo(conversation.targetId)
+    } catch (error) {
+      throw sdkOperationError(error)
+    }
+    assertCurrentOperation(instance, accountId, operation)
+    const updated = await store.updateConversation(conversation.id, {
+      userProfile: {
+        username: info.username,
+        avatar: info.avatar,
+        allowProactiveMsg: info.allow_proactive_msg,
+        updatedAt: Date.now(),
+      },
+      ...(info.username ? { title: info.username } : {}),
+      ...(info.avatar ? { avatarUrl: info.avatar } : {}),
+    })
+    assertCurrentOperation(instance, accountId, operation)
+    publish('conversation', updated)
+    return updated
+  })()
+  userProfileRequests.set(key, request)
+  try {
+    return await request
+  } finally {
+    if (userProfileRequests.get(key) === request) userProfileRequests.delete(key)
+  }
+}
+
+async function removeGroupMember(conversation: Conversation, messageId: string, accountId: string): Promise<{ ok: true }> {
+  const instance = requireCurrentBot(accountId)
+  if (conversation.type !== 'group') throw new Error('只有群聊支持移除成员')
+  const message = store.getMessage(conversation.id, messageId)
+  if (!message?.senderOpenid || message.direction !== 'incoming') throw new Error('无法确定该群成员的 OpenID')
+  if (message.roles?.some((role) => role === 'owner' || role === 'admin')) throw new Error('不能移除群主或管理员')
+  if (message.senderOpenid === conversation.botState?.memberOpenid) throw new Error('不能移除机器人自己')
+  const operation = connectionOperation
+  const key = JSON.stringify([accountId, conversation.targetId, message.senderOpenid])
+  if (memberRemovalRequests.has(key)) throw new Error('正在移除该成员，请勿重复操作')
+  checkApiInterval(memberRemovalCallTimes, instance, 2_000)
+  memberRemovalRequests.add(key)
+  try {
+    const result = await instance.batchRemoveGroupMembers(conversation.targetId, [message.senderOpenid])
+    assertCurrentOperation(instance, accountId, operation)
+    if (result.remove_members_result !== 'success') throw new Error('QQ 接口未确认成员移除成功，请核实群成员状态')
+    return { ok: true }
+  } catch (error) {
+    throw sdkOperationError(error)
+  } finally {
+    memberRemovalRequests.delete(key)
+  }
+}
+
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
@@ -957,6 +1059,31 @@ async function handleApi(request: IncomingMessage, response: ServerResponse, url
       return true
     }
     sendJson(response, 200, await recallMessage(conversation, messageId))
+    return true
+  }
+
+  const userProfileMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/user-profile$/)
+  if (userProfileMatch && request.method === 'POST') {
+    const conversation = store.getConversation(decodeURIComponent(userProfileMatch[1]))
+    if (!conversation) {
+      sendJson(response, 404, { error: '会话不存在' })
+      return true
+    }
+    const payload = await readJson(request)
+    sendJson(response, 200, await refreshUserProfile(conversation, String(payload.accountId ?? '')))
+    return true
+  }
+
+  const memberRemoveMatch = url.pathname.match(/^\/api\/conversations\/([^/]+)\/members\/([^/]+)\/remove$/)
+  if (memberRemoveMatch && request.method === 'POST') {
+    const conversation = store.getConversation(decodeURIComponent(memberRemoveMatch[1]))
+    if (!conversation) {
+      sendJson(response, 404, { error: '会话不存在' })
+      return true
+    }
+    const payload = await readJson(request)
+    if (payload.confirmed !== true) throw new Error('请先确认移出群聊')
+    sendJson(response, 200, await removeGroupMember(conversation, decodeURIComponent(memberRemoveMatch[2]), String(payload.accountId ?? '')))
     return true
   }
 

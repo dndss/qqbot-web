@@ -92,6 +92,12 @@ export interface Conversation {
   category?: string
   tags?: string[]
   botState?: GroupBotState
+  userProfile?: {
+    username: string
+    avatar: string
+    allowProactiveMsg: boolean
+    updatedAt: number
+  }
 }
 
 export interface StoredMessage {
@@ -164,6 +170,7 @@ export interface IncomingMessageLike {
   sender?: {
     user_id?: string
     user_name?: string
+    member_nickname?: string
     user_openid?: string
     permissions?: Array<string | number>
     member_role?: 'member' | 'owner' | 'admin'
